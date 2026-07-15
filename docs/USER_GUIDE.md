@@ -48,13 +48,35 @@ uv run zpotify
 
 After this, `uv run zpotify` goes straight into the app.
 
+## Installing as a global command
+
+This is how Python CLIs are normally installed — `uv tool` (or pipx) creates
+an isolated environment and puts a shim on your PATH:
+
+```sh
+uv tool install --editable /path/to/zpotify
+```
+
+Now `zpotify` runs from any directory. Housekeeping:
+
+```sh
+uv tool list              # see installed tools
+uv tool upgrade zpotify   # re-resolve dependencies after they change
+uv tool uninstall zpotify # remove the command
+```
+
+`--editable` links the repo's `src/`, so pulling/editing code applies
+immediately without reinstalling. Config always lives in `~/.config/zpotify.bak/`
+no matter where you run from. (If the project is ever published to PyPI,
+anyone could install it with just `uv tool install zpotify`.)
+
 ## Everyday use
 
 ```sh
-uv run zpotify          # the app
-uv run zpotify doctor   # health check: librespot, logins, audio, Premium
-uv run zpotify auth     # redo the Spotify login only
-uv run zpotify demo     # terminal-engine demo screen (no Spotify needed)
+zpotify          # the app
+zpotify doctor   # health check: librespot, logins, audio, Premium
+zpotify auth     # redo the Spotify login only
+zpotify demo     # terminal-engine demo screen (no Spotify needed)
 ```
 
 Start something playing: press `/`, type a song or artist, `enter` to search,
@@ -63,7 +85,7 @@ device; the Spotify app is never involved.
 
 ## The views
 
-Switch with keys `1`–`6` or click the tabs.
+Switch with keys `1`–`7` or click the tabs.
 
 | # | View | What it does |
 |---|---|---|
@@ -73,6 +95,7 @@ Switch with keys `1`–`6` or click the tabs.
 | 4 | **library** | Your liked songs; `enter` plays, `a` queues, `f` removes from library. |
 | 5 | **queue** | What's coming up next (`R` refreshes). |
 | 6 | **devices** | Every Spotify Connect device on your account; `enter` transfers playback to it (including back to zpotify). |
+| 7 | **settings** | Edit settings in-app (`enter`/`→` next value, `←` previous, click to cycle); saved instantly to `config.json`: streaming quality (96/160/320 kbps), track fade in/out (off–12 s), pause/resume fade, volume normalization, default visualizer. Quality and normalization restart the player engine (~2 s blip). |
 
 ## Keyboard reference
 
@@ -91,7 +114,7 @@ Switch with keys `1`–`6` or click the tabs.
 
 | Key | Action |
 |---|---|
-| `1`–`6` | switch view |
+| `1`–`7` | switch view (7 = settings) |
 | `/` | jump to search and focus the input |
 | `j` / `k` or arrows | move through lists |
 | `pgup` / `pgdn`, `home` / `end` | page / jump in lists |
@@ -162,7 +185,7 @@ Everything lives in `~/.config/zpotify.bak/`:
 
 | Path | Contents |
 |---|---|
-| `config.json` | client ID, volume, visualizer choice |
+| `config.json` | client ID, volume, visualizer, quality, fade settings |
 | `tokens.json` | OAuth tokens (chmod 600) |
 | `librespot/` | librespot's credential + system cache |
 

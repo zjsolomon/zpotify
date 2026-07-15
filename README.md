@@ -38,21 +38,33 @@ the visualizer. Everything you see and interact with is this codebase.
 - [uv](https://docs.astral.sh/uv/)
 - A free Spotify developer app — the first-run wizard walks you through it
 
-## Run
+## Install & run
+
+Install once as a global command (the standard `uv tool`/pipx way — an
+isolated venv plus a `zpotify` shim in `~/.local/bin`):
 
 ```sh
-uv run zpotify          # first run launches the setup wizard
-uv run zpotify doctor   # health check when something's off
-uv run zpotify auth     # redo the Spotify login
-uv run zpotify demo     # terminal-engine demo (no Spotify account needed)
+uv tool install --editable /path/to/zpotify
 ```
+
+Then from anywhere:
+
+```sh
+zpotify          # first run launches the setup wizard
+zpotify doctor   # health check when something's off
+zpotify auth     # redo the Spotify login
+zpotify demo     # terminal-engine demo (no Spotify account needed)
+```
+
+(`--editable` links `src/`, so code changes apply without reinstalling.
+Inside the repo, `uv run zpotify` works too.)
 
 **→ Full setup walkthrough, key reference, and troubleshooting: [docs/USER_GUIDE.md](docs/USER_GUIDE.md)**
 
 ## Keys
 
 `space` play/pause · `n`/`b` next/prev · `,`/`.` seek ±10s · `+`/`-` volume ·
-`/` search · `1-6` views · `j`/`k` navigate · `enter` play · `a` queue ·
+`/` search · `1-7` views (7 = settings) · `j`/`k` navigate · `enter` play · `a` queue ·
 `s` shuffle · `r` repeat · `v` visualizer · `?` help · `q` quit — plus full
 mouse support (click rows/tabs/buttons, scroll wheel, click the progress bar
 to seek).
