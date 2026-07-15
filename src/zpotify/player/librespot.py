@@ -89,11 +89,13 @@ class Librespot:
         name: str = DEVICE_NAME,
         cache_dir: Path = LIBRESPOT_CACHE_DIR,
         bitrate: int = 320,
+        normalization: bool = False,
         on_event: Callable[[LibrespotEvent], None] | None = None,
     ) -> None:
         self.name = name
         self.cache_dir = Path(cache_dir)
         self.bitrate = bitrate
+        self.normalization = normalization
         self.on_event = on_event
         self._proc: subprocess.Popen[bytes] | None = None
         self._stopping = False
@@ -118,6 +120,8 @@ class Librespot:
             "--initial-volume", "100",
             "--disable-audio-cache",
         ]
+        if self.normalization:
+            argv.append("--enable-volume-normalisation")
         if not self.credentials_cached:
             argv += ["--enable-oauth", "--oauth-port", "5588"]
         return argv

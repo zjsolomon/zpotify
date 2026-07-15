@@ -168,3 +168,37 @@ def test_attach_can_be_called_again() -> None:
     assert not reader.is_alive()
     out = _drain(eng, 2048)
     assert np.all(out == 999)
+
+
+def test_fade_envelope_ramps_down_and_up() -> None:
+    eng = AudioEngine(blocksize=441)  # 100 blocks/sec
+    # exactly fill the ring: enough for the 20 blocks below, and _write must
+    # not block (it would deadlock the test — there's no consumer thread)
+    eng._write(_frames(eng._capacity, value=10000))
+    out = np.empty((441, 2), dtype=np.int16)
+
+    eng._callback(out, 441, None, None)  # primes, env=1
+    assert np.all(out == 8007)  # volume 0.8 -> gain 205 -> (10000*205)>>8
+
+    eng.fade_to(0.0, 0.1)  # 10 blocks to silence
+    levels = []
+    for _ in range(12):
+        eng._callback(out, 441, None, None)
+        levels.append(abs(int(out[0][0])))
+    assert levels[0] < 8007            # ramping immediately
+    assert levels[-1] == 0             # fully silent
+    assert all(a >= b for a, b in zip(levels, levels[1:]))  # monotonic down
+
+    eng.fade_to(1.0, 0.05)  # 5 blocks back up
+    for _ in range(7):
+        eng._callback(out, 441, None, None)
+    assert np.all(out == 8007)
+    assert eng.env == 1.0
+
+
+def test_set_env_is_instant_and_flush_keeps_env() -> None:
+    eng = AudioEngine()
+    eng.set_env(0.0)
+    assert eng.env == 0.0
+    eng.fade_to(1.0, 0.0)  # zero seconds -> instant
+    assert eng.env == 1.0

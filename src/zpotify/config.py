@@ -31,11 +31,19 @@ SCOPES = (
 )
 
 
+_KNOWN_KEYS = ("client_id", "volume", "visualizer", "bitrate",
+               "fade_seconds", "pause_fade", "normalization")
+
+
 @dataclass
 class Config:
     client_id: str = ""
     volume: float = 0.8
     visualizer: str = "spectrum"  # spectrum | wave | off
+    bitrate: int = 320            # 96 | 160 | 320 kbps (librespot restart)
+    fade_seconds: float = 0.0     # track fade in/out; 0 = off
+    pause_fade: bool = True       # short fade on pause/resume
+    normalization: bool = False   # librespot volume normalisation (restart)
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -43,13 +51,12 @@ class Config:
         if not CONFIG_FILE.exists():
             return cls()
         data = json.loads(CONFIG_FILE.read_text())
-        known = {k: data.pop(k) for k in ("client_id", "volume", "visualizer") if k in data}
+        known = {k: data.pop(k) for k in _KNOWN_KEYS if k in data}
         return cls(**known, extra=data)
 
     def save(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        data = {"client_id": self.client_id, "volume": self.volume,
-                "visualizer": self.visualizer, **self.extra}
+        data = {**{k: getattr(self, k) for k in _KNOWN_KEYS}, **self.extra}
         CONFIG_FILE.write_text(json.dumps(data, indent=2) + "\n")
 
 

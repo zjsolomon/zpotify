@@ -70,6 +70,13 @@ class AudioEngine:
         self._cond = threading.Condition()
         self._primed = False
 
+        # Fade envelope: a 0..1 gain ramp stepped per callback block (~23 ms),
+        # multiplied into the output after volume. Drives track fade in/out
+        # and click-free pause/resume.
+        self._env = 1.0
+        self._env_target = 1.0
+        self._env_rate = 0.0  # per-frame delta
+
         # Visualizer tap: mono float of the most recently *played* frames.
         self._tap_len = 8192
         self._tap = np.zeros(self._tap_len, dtype=np.float32)
@@ -183,6 +190,43 @@ class AudioEngine:
             self._level += (rms - self._level) * 0.3
         return avail
 
+    def fade_to(self, target: float, seconds: float) -> None:
+        """Ramp the output envelope to ``target`` (0..1) over ``seconds``."""
+        target = min(1.0, max(0.0, target))
+        with self._cond:
+            self._env_target = target
+            if seconds <= 0.001:
+                self._env = target
+                self._env_rate = 0.0
+            else:
+                self._env_rate = (target - self._env) / (seconds * self.samplerate)
+
+    def set_env(self, value: float) -> None:
+        """Set the envelope instantly (e.g. to 0 before a track fade-in)."""
+        with self._cond:
+            self._env = min(1.0, max(0.0, value))
+            self._env_target = self._env
+            self._env_rate = 0.0
+
+    @property
+    def env(self) -> float:
+        return self._env
+
+    def _step_env(self, frames: int) -> float:
+        """Advance the envelope by ``frames`` and return the block's mean gain."""
+        with self._cond:
+            env = self._env
+            target = self._env_target
+            if env == target or self._env_rate == 0.0:
+                return env
+            after = env + self._env_rate * frames
+            if (self._env_rate > 0 and after >= target) or \
+               (self._env_rate < 0 and after <= target):
+                after = target
+                self._env_rate = 0.0
+            self._env = after
+            return (env + after) / 2.0
+
     def flush(self) -> None:
         """Drop everything buffered (e.g. on track change) and re-arm prebuffer."""
         with self._cond:
@@ -257,7 +301,11 @@ class AudioEngine:
                 scratch[got:] = 0
                 if got == 0:
                     self._primed = False  # underrun: re-arm the gate
-            outdata[:] = apply_volume(scratch[:frames], self.volume)
+            block = apply_volume(scratch[:frames], self.volume)
+            gain = self._step_env(frames)
+            if gain < 0.999:
+                block = (block.astype(np.float32) * gain).astype(np.int16)
+            outdata[:] = block
         except Exception as exc:  # noqa: BLE001 — never let it escape the callback
             self.last_error = exc
             try:

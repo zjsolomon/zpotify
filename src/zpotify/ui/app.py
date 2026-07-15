@@ -44,12 +44,13 @@ class App:
         self.analyzer = SpectrumAnalyzer(n_bins=48)
         self.audio = AudioEngine()
         self.audio.volume = config.volume
-        self.librespot = Librespot(on_event=self._on_librespot_event_threaded)
+        self.librespot = self._make_librespot()
 
         from zpotify.ui.views import (DevicesView, LibraryView, NowPlayingView,
-                                      PlaylistsView, QueueView, SearchView)
+                                      PlaylistsView, QueueView, SearchView,
+                                      SettingsView)
         self.views = [NowPlayingView(), SearchView(), PlaylistsView(),
-                      LibraryView(), QueueView(), DevicesView()]
+                      LibraryView(), QueueView(), DevicesView(), SettingsView()]
         self.view_index = 0
 
         self.playback: PlaybackState | None = None
@@ -65,6 +66,13 @@ class App:
         self._status_error = False
         self._hits: list[tuple[int, int, int, int, HitHandler]] = []
         self._librespot_auth_url: str | None = None
+        self._fade_out_started = False
+        self._player_restart_at: float | None = None  # debounced settings restart
+
+    def _make_librespot(self) -> Librespot:
+        return Librespot(bitrate=self.config.bitrate,
+                         normalization=self.config.normalization,
+                         on_event=self._on_librespot_event_threaded)
 
     # ------------------------------------------------------------- lifecycle
 
@@ -169,15 +177,33 @@ class App:
         elif event.kind in ("playing", "paused", "stopped"):
             if event.kind == "playing" and "loading" in event.data.get("line", "").lower():
                 self.audio.flush()  # track change: drop stale buffered audio
+                self._begin_fade_in(track_change=True)
             self._next_poll = 0.0  # confirm via API soon
+
+    def _begin_fade_in(self, track_change: bool) -> None:
+        """Raise the fade envelope for newly starting audio."""
+        self._fade_out_started = False
+        if track_change and self.config.fade_seconds > 0:
+            self.audio.set_env(0.0)
+            self.audio.fade_to(1.0, self.config.fade_seconds)
+        else:
+            self.audio.fade_to(1.0, 0.25 if self.config.pause_fade else 0.0)
 
     def _restart_librespot(self) -> None:
         time.sleep(1.0)
         self.librespot.stop()
+        self.librespot = self._make_librespot()
         self.librespot.start()
         stream = self.librespot.stdout
         if stream is not None:
             self.audio.attach(stream)
+        self.audio.flush()
+        self.audio.fade_to(1.0, 0.25)
+        self.workers.submit(self._find_our_device, self._on_device_found)
+
+    def schedule_player_restart(self) -> None:
+        """Debounced librespot restart after player-engine settings change."""
+        self._player_restart_at = time.monotonic() + 1.5
 
     # --------------------------------------------------------------- actions
 
@@ -209,13 +235,18 @@ class App:
                                   context_uri=context_uri,
                                   offset_position=offset_position,
                                   offset_uri=offset_uri),
-            describe="play")
+            describe="play",
+            then=lambda _: self._begin_fade_in(track_change=True))
 
     def toggle_play(self) -> None:
         if self.playback is not None and self.playback.is_playing:
+            if self.config.pause_fade:
+                self.audio.fade_to(0.0, 0.25)  # masks Connect latency, no click
             self.call_api(self.api.pause, describe="pause")
         elif self.playback is not None and self.playback.track is not None:
-            self.call_api(lambda: self.api.play(device_id=self.device_id), describe="resume")
+            self.call_api(lambda: self.api.play(device_id=self.device_id),
+                          describe="resume",
+                          then=lambda _: self._begin_fade_in(track_change=False))
         else:
             self.notify("nothing to resume — pick a track (/ to search)")
 
@@ -345,7 +376,7 @@ class App:
             view = self.views[1]
             assert isinstance(view, SearchView)
             view.focus_input()
-        elif char and char in "123456":
+        elif char and char in "1234567":
             self.switch_view(int(char) - 1)
         elif not view.wants_text:
             view.handle_key(self, key)
@@ -367,6 +398,26 @@ class App:
             self.workers.submit(self.api.playback, self._on_playback)
         if self.visualizer == "spectrum":
             self.analyzer.update(self.audio.latest(2048))
+        if self._player_restart_at is not None and now >= self._player_restart_at:
+            self._player_restart_at = None
+            self.notify("restarting player…")
+            self.workers.submit(self._restart_librespot, None)
+        self._drive_track_fade()
+
+    def _drive_track_fade(self) -> None:
+        """Fade out approaching the end of the track; recover on track repeat."""
+        fade = self.config.fade_seconds
+        state = self.playback
+        if fade <= 0 or state is None or state.track is None:
+            return
+        remaining = state.track.duration_ms - self.progress_ms()
+        if state.is_playing and not self._fade_out_started \
+                and 0 < remaining <= fade * 1000:
+            self._fade_out_started = True
+            self.audio.fade_to(0.0, remaining / 1000)
+        elif self._fade_out_started and self.progress_ms() < 5000:
+            # new/repeated track began without a librespot Loading event
+            self._begin_fade_in(track_change=True)
 
     def _on_playback(self, result, error) -> None:
         if error is not None:
@@ -490,7 +541,7 @@ class App:
             (", / .", "seek -10s / +10s"), ("+ / -", "volume"),
             ("s", "toggle shuffle"), ("r", "cycle repeat"),
             ("v", "visualizer: spectrum / wave / off"),
-            ("/", "search"), ("1-6", "switch view"),
+            ("/", "search"), ("1-7", "switch view (7 = settings)"),
             ("j k / arrows", "navigate lists"), ("enter", "play selection"),
             ("f", "save/unsave track (library)"), ("q", "quit"),
             ("", ""), ("mouse", "click rows, tabs, buttons; wheel scrolls;"),
