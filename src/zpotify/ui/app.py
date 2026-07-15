@@ -68,6 +68,10 @@ class App:
         self._librespot_auth_url: str | None = None
         self._fade_out_started = False
         self._player_restart_at: float | None = None  # debounced settings restart
+        # Optimistic UI: local actions mutate playback state immediately; any
+        # poll *requested before* the action is stale and must be discarded,
+        # or the icon/progress would flicker back until the next poll.
+        self._action_at = 0.0
 
     def _make_librespot(self) -> Librespot:
         return Librespot(bitrate=self.config.bitrate,
@@ -187,7 +191,7 @@ class App:
             self.audio.set_env(0.0)
             self.audio.fade_to(1.0, self.config.fade_seconds)
         else:
-            self.audio.fade_to(1.0, 0.25 if self.config.pause_fade else 0.0)
+            self.audio.fade_to(1.0, 0.15 if self.config.pause_fade else 0.0)
 
     def _restart_librespot(self) -> None:
         time.sleep(1.0)
@@ -230,6 +234,7 @@ class App:
         if self.device_id is None:
             self.notify("player device not ready yet", error=True)
             return
+        self._mark_action()
         self.call_api(
             lambda: self.api.play(device_id=self.device_id, uris=uris,
                                   context_uri=context_uri,
@@ -238,41 +243,73 @@ class App:
             describe="play",
             then=lambda _: self._begin_fade_in(track_change=True))
 
+    def _mark_action(self) -> None:
+        """An optimistic local mutation happened; stale polls must be dropped."""
+        self._action_at = time.monotonic()
+
     def toggle_play(self) -> None:
-        if self.playback is not None and self.playback.is_playing:
+        state = self.playback
+        if state is not None and state.is_playing:
             if self.config.pause_fade:
-                self.audio.fade_to(0.0, 0.25)  # masks Connect latency, no click
+                self.audio.fade_to(0.0, 0.12)  # masks Connect latency, no click
+            # optimistic: freeze the clock and flip the icon immediately
+            state.progress_ms = self.progress_ms()
+            state.is_playing = False
+            self._poll_at = time.monotonic()
+            self._mark_action()
             self.call_api(self.api.pause, describe="pause")
-        elif self.playback is not None and self.playback.track is not None:
+        elif state is not None and state.track is not None:
+            state.is_playing = True
+            self._poll_at = time.monotonic()
+            self._mark_action()
             self.call_api(lambda: self.api.play(device_id=self.device_id),
                           describe="resume",
                           then=lambda _: self._begin_fade_in(track_change=False))
         else:
             self.notify("nothing to resume — pick a track (/ to search)")
 
+    def _optimistic_track_change(self) -> None:
+        """Reset the progress bar immediately; the poll fills in the new track."""
+        state = self.playback
+        if state is not None and state.track is not None:
+            state.progress_ms = 0
+            state.is_playing = True
+            self._poll_at = time.monotonic()
+        self._mark_action()
+
     def next_track(self) -> None:
+        self._optimistic_track_change()
         self.call_api(self.api.next_track, describe="next",
                       then=lambda _: self.audio.flush())
 
     def previous_track(self) -> None:
+        self._optimistic_track_change()
         self.call_api(self.api.previous_track, describe="previous",
+                      then=lambda _: self.audio.flush())
+
+    def _seek_to(self, target_ms: int) -> None:
+        state = self.playback
+        if state is None or state.track is None:
+            return
+        # optimistic: the progress bar jumps on the keypress/click
+        state.progress_ms = target_ms
+        self._poll_at = time.monotonic()
+        self._mark_action()
+        self.call_api(lambda: self.api.seek(target_ms), describe="seek",
                       then=lambda _: self.audio.flush())
 
     def seek_relative(self, delta_ms: int) -> None:
         state = self.playback
         if state is None or state.track is None:
             return
-        target = min(max(0, self.progress_ms() + delta_ms), state.track.duration_ms - 1000)
-        self.call_api(lambda: self.api.seek(target), describe="seek",
-                      then=lambda _: self.audio.flush())
+        self._seek_to(min(max(0, self.progress_ms() + delta_ms),
+                          state.track.duration_ms - 1000))
 
     def seek_fraction(self, fraction: float) -> None:
         state = self.playback
         if state is None or state.track is None:
             return
-        target = int(state.track.duration_ms * min(max(fraction, 0.0), 1.0))
-        self.call_api(lambda: self.api.seek(target), describe="seek",
-                      then=lambda _: self.audio.flush())
+        self._seek_to(int(state.track.duration_ms * min(max(fraction, 0.0), 1.0)))
 
     def adjust_volume(self, delta: float) -> None:
         self.audio.volume = min(1.0, max(0.0, self.audio.volume + delta))
@@ -280,6 +317,9 @@ class App:
 
     def toggle_shuffle(self) -> None:
         state = not (self.playback.shuffle if self.playback else False)
+        if self.playback is not None:
+            self.playback.shuffle = state  # optimistic
+            self._mark_action()
         self.call_api(lambda: self.api.set_shuffle(state),
                       describe="shuffle")
 
@@ -287,6 +327,9 @@ class App:
         order = ["off", "context", "track"]
         current = self.playback.repeat if self.playback else "off"
         mode = order[(order.index(current) + 1) % 3] if current in order else "off"
+        if self.playback is not None:
+            self.playback.repeat = mode  # optimistic
+            self._mark_action()
         self.call_api(lambda: self.api.set_repeat(mode), describe="repeat")
 
     def cycle_visualizer(self) -> None:
@@ -395,7 +438,9 @@ class App:
     def _tick(self, now: float) -> None:
         if self.device_id is not None and now >= self._next_poll:
             self._next_poll = now + POLL_INTERVAL
-            self.workers.submit(self.api.playback, self._on_playback)
+            self.workers.submit(
+                self.api.playback,
+                lambda result, error, t0=now: self._on_playback(result, error, t0))
         if self.visualizer == "spectrum":
             self.analyzer.update(self.audio.latest(2048))
         if self._player_restart_at is not None and now >= self._player_restart_at:
@@ -419,11 +464,13 @@ class App:
             # new/repeated track began without a librespot Loading event
             self._begin_fade_in(track_change=True)
 
-    def _on_playback(self, result, error) -> None:
+    def _on_playback(self, result, error, requested_at: float = float("inf")) -> None:
         if error is not None:
             if isinstance(error, NeedsLogin):
                 self.notify("session expired — run `zpotify auth`", error=True)
             return
+        if requested_at < self._action_at:
+            return  # snapshot predates a local optimistic action: stale
         self.playback = result
         self._poll_at = time.monotonic()
 
