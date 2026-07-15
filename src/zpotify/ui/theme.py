@@ -36,8 +36,9 @@ ROW_DIM_SELECTED = Style(fg=FG_DIM, bg=(40, 60, 46))
 BAR_DONE = Style(fg=GREEN, bg=BG)
 BAR_TODO = Style(fg=(52, 52, 58), bg=BG)
 
-INPUT = Style(fg=WHITE, bg=BG_ALT)
-INPUT_FOCUS = Style(fg=WHITE, bg=(34, 34, 40))
+INPUT_FG = (200, 200, 205)  # light grey — readable in truecolor and 256 modes
+INPUT = Style(fg=INPUT_FG, bg=BG_ALT)
+INPUT_FOCUS = Style(fg=INPUT_FG, bg=(34, 34, 40))
 
 
 def spectrum_color(height: float) -> tuple[int, int, int]:

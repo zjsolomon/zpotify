@@ -14,7 +14,7 @@ import sys
 import unicodedata
 from typing import IO
 
-from .style import DEFAULT, Style
+from .style import DEFAULT, Style, detect_color_mode, set_color_mode
 
 # Sentinel char occupying the second cell of a wide (double-width) glyph. The
 # differ prints the wide char once and skips this marker.
@@ -84,6 +84,7 @@ class Screen:
         """Enter raw mode, alternate screen and enable mouse/paste reporting."""
         if self._active:
             return self
+        set_color_mode(detect_color_mode())
         import termios
         import tty
 
