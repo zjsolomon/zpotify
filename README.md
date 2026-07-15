@@ -38,7 +38,8 @@ uv run zpotify doctor   # check librespot, audio output, credentials
 
 ## Keys
 
-`space` play/pause · `n` next · `b` prev · `+`/`-` volume · `/` search ·
-`1-6` views · `j`/`k` navigate · `enter` play · `s` shuffle · `r` repeat ·
-`v` visualizer mode · `?` help · `q` quit — plus full mouse support (click,
-scroll, seek on the progress bar).
+`space` play/pause · `n` next · `b` prev · `,`/`.` seek ±10s · `+`/`-` volume ·
+`/` search · `1-6` views · `j`/`k` navigate · `enter` play · `a` add to queue ·
+`f` unsave (library) · `s` shuffle · `r` repeat · `v` visualizer mode ·
+`R` refresh (queue/devices) · `?` help · `q` quit — plus full mouse support
+(click rows/tabs/buttons, scroll wheel, click the progress bar to seek).
