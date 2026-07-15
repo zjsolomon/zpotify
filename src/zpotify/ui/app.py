@@ -167,6 +167,8 @@ class App:
             self.notify("librespot exited — restarting…", error=True)
             self.workers.submit(self._restart_librespot, None)
         elif event.kind in ("playing", "paused", "stopped"):
+            if event.kind == "playing" and "loading" in event.data.get("line", "").lower():
+                self.audio.flush()  # track change: drop stale buffered audio
             self._next_poll = 0.0  # confirm via API soon
 
     def _restart_librespot(self) -> None:
@@ -218,24 +220,28 @@ class App:
             self.notify("nothing to resume — pick a track (/ to search)")
 
     def next_track(self) -> None:
-        self.call_api(self.api.next_track, describe="next")
+        self.call_api(self.api.next_track, describe="next",
+                      then=lambda _: self.audio.flush())
 
     def previous_track(self) -> None:
-        self.call_api(self.api.previous_track, describe="previous")
+        self.call_api(self.api.previous_track, describe="previous",
+                      then=lambda _: self.audio.flush())
 
     def seek_relative(self, delta_ms: int) -> None:
         state = self.playback
         if state is None or state.track is None:
             return
         target = min(max(0, self.progress_ms() + delta_ms), state.track.duration_ms - 1000)
-        self.call_api(lambda: self.api.seek(target), describe="seek")
+        self.call_api(lambda: self.api.seek(target), describe="seek",
+                      then=lambda _: self.audio.flush())
 
     def seek_fraction(self, fraction: float) -> None:
         state = self.playback
         if state is None or state.track is None:
             return
         target = int(state.track.duration_ms * min(max(fraction, 0.0), 1.0))
-        self.call_api(lambda: self.api.seek(target), describe="seek")
+        self.call_api(lambda: self.api.seek(target), describe="seek",
+                      then=lambda _: self.audio.flush())
 
     def adjust_volume(self, delta: float) -> None:
         self.audio.volume = min(1.0, max(0.0, self.audio.volume + delta))
