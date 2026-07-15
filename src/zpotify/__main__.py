@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import sys
 import time
-import webbrowser
 
 from zpotify import config as cfg
 from zpotify.auth import Auth, AuthError
@@ -84,19 +83,49 @@ def _setup(config: cfg.Config, auth: Auth) -> bool:
 
 
 def _librespot_signin(librespot) -> bool:
-    """Run librespot until it caches credentials via its OAuth flow."""
+    """Run librespot until it caches credentials via its OAuth flow.
+
+    librespot 0.8 opens the browser itself and prints the authorize URL to
+    *stdout* (the same pipe that later carries PCM — harmless here, since no
+    audio can flow before authentication). We sniff stdout for the URL as a
+    fallback so the user can open it by hand if the browser didn't launch.
+    """
+    import threading
+
     url_seen: list[str] = []
+
+    def announce(url: str) -> None:
+        if url and not url_seen:
+            url_seen.append(url)
+            print(f"If the browser didn't open, sign in here:\n  {url}")
 
     def on_event(event) -> None:
         if event.kind == "auth_url":
-            url = event.data.get("url", "")
-            if url and not url_seen:
-                url_seen.append(url)
-                print(f"Sign in here (browser opening): {url}")
-                webbrowser.open(url)
+            announce(event.data.get("url", ""))
+
+    def sniff_stdout() -> None:
+        stream = librespot.stdout
+        if stream is None:
+            return
+        buffer = b""
+        while True:
+            try:
+                chunk = stream.readline()
+            except (OSError, ValueError):
+                return
+            if not chunk:
+                return
+            buffer = chunk
+            text = buffer.decode("utf-8", "replace")
+            start = text.find("https://accounts.spotify.com/")
+            if start != -1:
+                announce(text[start:].split()[0].strip())
+                return
 
     librespot.on_event = on_event
     librespot.start()
+    threading.Thread(target=sniff_stdout, daemon=True).start()
+    print("Waiting for player sign-in (a browser window may appear)…")
     try:
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
@@ -105,7 +134,7 @@ def _librespot_signin(librespot) -> bool:
                 return True
             if not librespot.running:
                 print("librespot exited before completing sign-in. Log tail:")
-                for line in librespot.stderr_tail[-8:]:
+                for line in list(librespot.stderr_tail)[-8:]:
                     print(f"  {line}")
                 return False
             time.sleep(0.5)
