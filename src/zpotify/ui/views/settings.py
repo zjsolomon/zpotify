@@ -49,10 +49,6 @@ def _build_settings(app) -> list[Setting]:
     def set_bitrate(v):
         config.bitrate = v
 
-    def set_fade(v):
-        config.fade_seconds = v
-        app.audio.set_crossfade(v)  # applies live
-
     def set_pause_fade(v):
         config.pause_fade = v
 
@@ -68,10 +64,6 @@ def _build_settings(app) -> list[Setting]:
         Setting("streaming quality", "audio bitrate from Spotify (restarts the player)",
                 [(96, "96 kbps"), (160, "160 kbps"), (320, "320 kbps")],
                 lambda: config.bitrate, set_bitrate, needs_restart=True),
-        Setting("crossfade", "overlap the end of each track into the start of the next",
-                [(0.0, "off"), (1.0, "1 s"), (2.0, "2 s"), (3.0, "3 s"),
-                 (5.0, "5 s"), (8.0, "8 s"), (12.0, "12 s")],
-                lambda: config.fade_seconds, set_fade),
         Setting("pause/resume fade", "short fade instead of hard cuts when pausing",
                 onoff, lambda: config.pause_fade, set_pause_fade),
         Setting("volume normalization", "play tracks at similar loudness (restarts the player)",

@@ -62,7 +62,6 @@ class App:
         self.analyzer = SpectrumAnalyzer(n_bins=48)
         self.audio = AudioEngine()
         self.audio.volume = config.volume
-        self.audio.set_crossfade(config.fade_seconds)
         self.librespot = self._make_librespot()
 
         from zpotify.ui.views import (DevicesView, LibraryView, NowPlayingView,
@@ -110,9 +109,6 @@ class App:
         self.search_overlay: TextInput | None = None
         self._search_overlay_rect: tuple[int, int, int, int] | None = None
         self._player_restart_at: float | None = None  # debounced settings restart
-        # A poll that reported the *next* track while the crossfade boundary
-        # is still audibly ahead; adopted once the boundary plays.
-        self._pending_playback: tuple[PlaybackState, float] | None = None
         # Optimistic UI: local actions mutate playback state immediately; any
         # poll *requested before* the action is stale and must be discarded,
         # or the icon/progress would flicker back until the next poll.
@@ -231,11 +227,6 @@ class App:
             self.notify("librespot exited — restarting…", error=True)
             self.workers.submit(self._restart_librespot, None)
         elif event.kind in ("playing", "paused", "stopped"):
-            if event.kind == "playing" and "loading" in event.data.get("line", "").lower():
-                # Natural track change: the previous track has been fully
-                # written (gapless disabled). Mark the boundary so the engine
-                # crossfades the outgoing tail into the incoming head.
-                self.audio.mark_boundary()
             self._next_poll = 0.0  # confirm via API soon
 
     def _restart_librespot(self) -> None:
@@ -309,8 +300,7 @@ class App:
                                   offset_uri=offset_uri,
                                   position_ms=position_ms),
             describe="play",
-            # manual play: cut the old audio (no crossfade — that's only for
-            # natural track advance) and ungate if we were pause-held
+            # manual play: cut the old audio and ungate if we were pause-held
             then=lambda _: (self.audio.flush(), self.audio.release(0.15)))
 
     def _mark_action(self) -> None:
@@ -464,21 +454,13 @@ class App:
         return min(progress, state.track.duration_ms)
 
     def display_progress_ms(self) -> int:
-        """Track position as *heard*, not as streamed.
-
-        After a track boundary the engine counts the audible position exactly
-        (crossed_ms), so the bar moves from 0:00 the moment the incoming song
-        becomes audible in the crossfade. Otherwise (fresh plays, seeks —
-        anything that flushed) fall back to server clock minus in-flight
-        audio (ring + pipe)."""
+        """Track position as *heard*: the server clock minus audio still in
+        flight (ring buffer + pipe, well under a second)."""
         state = self.playback
         if state is None or state.track is None:
             return 0
         if not state.is_playing:
             return self.progress_ms()
-        crossed = self.audio.crossed_ms
-        if crossed is not None:
-            return min(self.progress_ms(), max(0, crossed))
         lag = int(self.audio.latency * 1000)
         return max(0, self.progress_ms() - lag)
 
@@ -624,24 +606,14 @@ class App:
             self._player_restart_at = None
             self.notify("restarting player…")
             self.workers.submit(self._restart_librespot, None)
-        # Adopt a held-back track change once its boundary is audible (the
-        # crossfade has begun), or after a failsafe timeout.
-        if self._pending_playback is not None:
-            result, seen_at = self._pending_playback
-            if seen_at < self._action_at:
-                self._pending_playback = None  # user acted since: stale
-            elif not self.audio.transition_pending or now - seen_at > 15.0:
-                self._pending_playback = None
-                self._adopt_playback(result, seen_at)
         # Self-heal: if Spotify says we're playing but our output is gated
         # (a pause/resume race), ramp it back up — silence must never be a
-        # permanent state while playback is active. A held engine or an armed
-        # boundary fade is intentional; leave those alone.
+        # permanent state while playback is active. A held engine is
+        # intentional; leave it alone.
         state = self.playback
         if state is not None and state.is_playing \
                 and self.audio.env_target == 0.0 \
-                and not self.audio.held \
-                and not self.audio.boundary_fade_armed:
+                and not self.audio.held:
             self.audio.fade_to(1.0, 0.15)
 
     def _on_playback(self, result, error, requested_at: float = float("inf")) -> None:
@@ -660,17 +632,6 @@ class App:
                 self._stage_attempted = True
                 self.workers.submit(self._fetch_stage_candidate, self._on_stage)
             return
-        current = self.playback
-        if (result.is_playing and current is not None
-                and current.track is not None and result.track is not None
-                and result.track.id != current.track.id
-                and self.audio.transition_pending):
-            # With crossfade on, librespot streams ahead: Spotify reports the
-            # next track seconds before it's audible. Keep showing the
-            # outgoing track until the boundary reaches the speakers.
-            self._pending_playback = (result, time.monotonic())
-            return
-        self._pending_playback = None
         self._adopt_playback(result, time.monotonic())
 
     def _adopt_playback(self, result: PlaybackState, poll_at: float) -> None:

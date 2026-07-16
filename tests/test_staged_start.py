@@ -206,59 +206,19 @@ def test_play_tracks_filters_malformed_uris(app, monkeypatch) -> None:
     assert "nothing playable" in notes[0]
 
 
-# -- crossfade-aware track display ------------------------------------------------
+# -- helpers ----------------------------------------------------------------------
 
 def _mk_track(i: int) -> Track:
     return Track(f"t{i}", f"spotify:track:{'z'*18}{i:04d}", f"S{i}", ("A",), "Al", 200000)
 
-def test_track_change_display_waits_for_audible_boundary(app) -> None:
-    a, b = _mk_track(1), _mk_track(2)
-    from zpotify.models import PlaybackState
-    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=1000, track=a),
-                        time.monotonic())
-    # librespot streamed ahead: boundary marked but not yet audible
-    app.audio.set_crossfade(2.0)
-    app.audio._boundaries.append(10_000)
-
-    late = PlaybackState(is_playing=True, progress_ms=5, track=b)
-    app._on_playback(late, None)
-    assert app.playback.track.id == a.id      # still showing the outgoing track
-    assert app._pending_playback is not None
-
-    app.audio._boundaries.clear()             # boundary reached the speakers
-    app._tick(time.monotonic())
-    assert app.playback.track.id == b.id      # now adopted
-    assert app._pending_playback is None
-
-
-def test_pending_track_discarded_after_user_action(app) -> None:
-    a, b = _mk_track(1), _mk_track(2)
-    from zpotify.models import PlaybackState
-    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=1000, track=a),
-                        time.monotonic())
-    app.audio.set_crossfade(2.0)
-    app.audio._boundaries.append(10_000)
-    app._on_playback(PlaybackState(is_playing=True, progress_ms=5, track=b), None)
-    assert app._pending_playback is not None
-    app._mark_action()                        # user skipped/sought meanwhile
-    app.audio._boundaries.clear()
-    app._tick(time.monotonic())
-    assert app._pending_playback is None
-    assert app.playback.track.id == a.id      # stale snapshot not adopted
-
-
-def test_manual_play_flushes_old_audio_and_boundaries(app, monkeypatch) -> None:
-    """Enter on any list is a plain play: never crossfaded from the old track."""
+def test_manual_play_flushes_old_audio(app, monkeypatch) -> None:
+    """Enter on any list is a plain play: the old track's audio is cut."""
     thens = []
     monkeypatch.setattr(app, "call_api",
                         lambda fn, then=None, refresh=True, describe="",
                         on_error=None: thens.append(then))
     monkeypatch.setattr(app.api, "play", lambda **kw: None)
-    app.audio.set_crossfade(2.0)
     app.audio._write(__import__("numpy").full((100, 2), 5, dtype="int16"))
-    app.audio.mark_boundary()               # pretend a transition was pending
     app.play_tracks(uris=["spotify:track:" + "q" * 22])
-    assert thens and thens[-1] is not None
-    thens[-1](None)                          # simulate API success
-    assert app.audio._buffered == 0          # old audio gone
-    assert not app.audio.transition_pending  # boundary cleared: not tied
+    thens[-1](None)                           # simulate API success
+    assert app.audio._buffered == 0           # old audio gone
