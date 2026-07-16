@@ -340,6 +340,27 @@ class SpotifyAPI:
         tracks = (parse_track(i.get("track")) for i in items if i is not None)
         return [t for t in tracks if t is not None]
 
+    def last_played(self) -> tuple[Track, float] | None:
+        """Most recent history entry as ``(track, played_at_epoch)``.
+
+        Note: Spotify only adds tracks to history once (mostly) finished, so
+        an interrupted session's current track will not be here yet.
+        """
+        from datetime import datetime
+
+        data = self._request("GET", "/me/player/recently-played", params={"limit": 1}) or {}
+        for item in data.get("items", []) or []:
+            track = parse_track((item or {}).get("track"))
+            if track is None:
+                continue
+            try:
+                stamp = datetime.fromisoformat(
+                    item.get("played_at", "").replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                stamp = 0.0
+            return track, stamp
+        return None
+
     def album_tracks(self, album_id: str) -> list[Track]:
         data = self._request("GET", f"/albums/{album_id}/tracks", params={"limit": 50}) or {}
         items = data.get("items", []) or []

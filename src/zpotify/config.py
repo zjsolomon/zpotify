@@ -77,3 +77,25 @@ def write_tokens(tokens: dict) -> None:
 
 def clear_tokens() -> None:
     TOKENS_FILE.unlink(missing_ok=True)
+
+
+# -- local session (what zpotify itself was last playing) ----------------------
+
+SESSION_FILE = CONFIG_DIR / "session.json"
+
+
+def read_session() -> dict | None:
+    if not SESSION_FILE.exists():
+        return None
+    try:
+        return json.loads(SESSION_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def write_session(data: dict) -> None:
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        SESSION_FILE.write_text(json.dumps(data) + "\n")
+    except OSError:
+        pass  # session persistence is best-effort

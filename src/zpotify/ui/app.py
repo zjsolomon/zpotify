@@ -29,8 +29,23 @@ from zpotify.ui.workers import WorkerPool
 FRAME = 1 / 30
 POLL_INTERVAL = 2.0
 ESC_TIMEOUT = 0.025
+SESSION_SAVE_INTERVAL = 5.0
 
 HitHandler = Callable[[Mouse], None]
+
+
+def choose_stage(local: dict | None, remote: tuple[Track, float] | None) -> dict | None:
+    """Pick what to stage at startup: zpotify's own saved session or Spotify's
+    account-wide history — whichever is newer. Local wins ties because history
+    omits the track a session was interrupted in the middle of."""
+    local_at = (local or {}).get("saved_at", 0.0)
+    remote_at = remote[1] if remote else 0.0
+    if local and local.get("track") and local_at >= remote_at:
+        return {"kind": "local", **local}
+    if remote is not None:
+        return {"kind": "remote", "track": remote[0].to_dict(),
+                "progress_ms": 0, "context_uri": None, "up_next": []}
+    return None
 
 
 class App:
@@ -57,11 +72,13 @@ class App:
         self.view_index = 0
 
         self.playback: PlaybackState | None = None
-        # "Staged" start: nothing was playing anywhere, so the most recently
-        # played track (any device — e.g. the phone) is shown paused, ready
-        # for space to start it.
+        # "Staged" start: nothing was playing anywhere, so the freshest of
+        # (zpotify's own saved session, account-wide last played) is shown
+        # paused, ready for space to start it.
         self._staged = False
         self._stage_attempted = False
+        self._staged_session: dict | None = None
+        self._session_saved_at = 0.0
         self.up_next: list[Track] = []   # queue preview for the now-playing view
         self._next_queue_poll = 0.0
         self._last_track_id: str | None = None
@@ -144,6 +161,10 @@ class App:
         self.workers.submit(self._find_our_device, self._on_device_found)
 
     def _shutdown(self) -> None:
+        state = self.playback
+        if (state is not None and state.device is not None
+                and state.device.id == self.device_id and not self._staged):
+            self._write_session_now()  # final snapshot for the next launch
         self.config.volume = round(self.audio.volume, 2)
         self.config.visualizer = self.visualizer
         try:
@@ -259,7 +280,8 @@ class App:
         pool.submit(fn, done)
 
     def play_tracks(self, uris: list[str] | None = None, context_uri: str | None = None,
-                    offset_position: int | None = None, offset_uri: str | None = None) -> None:
+                    offset_position: int | None = None, offset_uri: str | None = None,
+                    position_ms: int | None = None) -> None:
         if self.device_id is None:
             self.notify("player device not ready yet", error=True)
             return
@@ -268,7 +290,8 @@ class App:
             lambda: self.api.play(device_id=self.device_id, uris=uris,
                                   context_uri=context_uri,
                                   offset_position=offset_position,
-                                  offset_uri=offset_uri),
+                                  offset_uri=offset_uri,
+                                  position_ms=position_ms),
             describe="play",
             then=lambda _: self._begin_fade_in(track_change=True))
 
@@ -279,12 +302,25 @@ class App:
     def toggle_play(self) -> None:
         state = self.playback
         if self._staged and state is not None and state.track is not None:
-            # staged track: there is no Spotify session to resume — start one
+            # staged track: there is no Spotify session to resume — start a
+            # fresh one that recreates the old session as closely as possible
             if self.device_id is None:
                 self.notify("player device not ready yet", error=True)
                 return
+            session = self._staged_session or {}
             self._staged = False
-            self.play_tracks(uris=[state.track.uri])
+            position = int(session.get("progress_ms") or 0)
+            context_uri = session.get("context_uri")
+            if context_uri:
+                # context playback rebuilds the queue exactly like Spotify
+                self.play_tracks(context_uri=context_uri,
+                                 offset_uri=state.track.uri,
+                                 position_ms=position)
+            else:
+                # no context: chain the track + saved up-next as one session
+                uris = [state.track.uri] + [
+                    t.uri for t in self.up_next[:10] if t.uri]
+                self.play_tracks(uris=uris, position_ms=position)
             return
         if state is not None and state.is_playing:
             if self.config.pause_fade:
@@ -555,26 +591,68 @@ class App:
             self._poll_at = time.monotonic()
             if not self._stage_attempted and self.device_id is not None:
                 self._stage_attempted = True
-                self.workers.submit(lambda: self.api.recently_played(limit=1),
-                                    self._on_recent)
+                self.workers.submit(self._fetch_stage_candidate, self._on_stage)
             return
         self._staged = False
         self.playback = result
         self._poll_at = time.monotonic()
+        self._maybe_save_session()
         track_id = result.track.id if result.track else None
         if track_id != self._last_track_id:
             self._last_track_id = track_id
             self.refresh_queue_soon()
 
-    def _on_recent(self, result, error) -> None:
-        """Stage the last-played track (from any device) as ready-to-play."""
-        if error is not None or not result or self.playback is not None:
+    def _fetch_stage_candidate(self) -> dict | None:
+        """Worker: newest of the local saved session and Spotify's history."""
+        remote = None
+        try:
+            remote = self.api.last_played()
+        except Exception:  # noqa: BLE001 — offline history is fine
+            pass
+        return choose_stage(cfg.read_session(), remote)
+
+    def _on_stage(self, result, error) -> None:
+        """Stage a candidate track as ready-to-play (paused, position kept)."""
+        if error is not None or result is None or self.playback is not None:
             return
-        track = result[0]
-        self.playback = PlaybackState(is_playing=False, progress_ms=0, track=track)
+        track = Track.from_dict(result["track"])
+        progress = int(result.get("progress_ms") or 0)
+        self.playback = PlaybackState(is_playing=False, progress_ms=progress,
+                                      track=track,
+                                      context_uri=result.get("context_uri"))
+        self.up_next = [Track.from_dict(d) for d in result.get("up_next") or []]
         self._staged = True
+        self._staged_session = result
         self._poll_at = time.monotonic()
         self.notify(f"ready: {track.name} — space plays")
+
+    def _maybe_save_session(self) -> None:
+        """Persist what zpotify itself is playing so a restart can restore it.
+
+        Only when we are the active device — the phone's sessions are not
+        ours to remember (Spotify's history covers those).
+        """
+        state = self.playback
+        if (state is None or state.track is None or state.device is None
+                or self.device_id is None or state.device.id != self.device_id):
+            return
+        now = time.monotonic()
+        if now - self._session_saved_at < SESSION_SAVE_INTERVAL:
+            return
+        self._session_saved_at = now
+        self._write_session_now()
+
+    def _write_session_now(self) -> None:
+        state = self.playback
+        if state is None or state.track is None:
+            return
+        cfg.write_session({
+            "saved_at": time.time(),
+            "track": state.track.to_dict(),
+            "progress_ms": self.progress_ms(),
+            "context_uri": state.context_uri,
+            "up_next": [t.to_dict() for t in self.up_next[:10]],
+        })
 
     def refresh_queue_soon(self) -> None:
         self._next_queue_poll = 0.0

@@ -22,6 +22,20 @@ class Track:
     def artist(self) -> str:
         return ", ".join(self.artists)
 
+    def to_dict(self) -> dict:
+        return {"id": self.id, "uri": self.uri, "name": self.name,
+                "artists": list(self.artists), "album": self.album,
+                "duration_ms": self.duration_ms, "explicit": self.explicit}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Track":
+        return cls(id=data.get("id", ""), uri=data.get("uri", ""),
+                   name=data.get("name", ""),
+                   artists=tuple(data.get("artists") or ()),
+                   album=data.get("album", ""),
+                   duration_ms=int(data.get("duration_ms", 0)),
+                   explicit=bool(data.get("explicit", False)))
+
 
 @dataclass(frozen=True)
 class Playlist:

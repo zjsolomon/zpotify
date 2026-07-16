@@ -78,12 +78,13 @@ zpotify doctor   # health check: librespot, logins, audio, Premium
 zpotify auth     # redo the Spotify login only
 ```
 
-On launch, if nothing is playing anywhere on your account, zpotify pulls your
-most recently played track (from any device — phone included) and stages it
-paused on the now-playing screen: press `space` and it starts. Otherwise press
-`/`, type a song or artist, `enter` to search, arrow down to a result, `enter`
-again. Audio comes out of your default output device; the Spotify app is never
-involved.
+On launch, if nothing is playing anywhere on your account, zpotify stages a
+track paused on the now-playing screen, ready for `space`: whichever is newer
+of (a) what zpotify itself was last playing — with its position, playlist
+context, and up-next queue restored — or (b) your account's most recently
+played track from any device, phone included. Otherwise press `/`, type a song
+or artist, `enter` to search, arrow down to a result, `enter` again. Audio
+comes out of your default output device; the Spotify app is never involved.
 
 ## The views
 
