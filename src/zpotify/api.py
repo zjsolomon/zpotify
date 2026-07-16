@@ -249,23 +249,33 @@ class SpotifyAPI:
         return playlists[:200]
 
     def playlist_tracks(self, playlist_id: str, limit: int = 100) -> list[Track]:
+        """List a playlist's tracks.
+
+        Uses ``/playlists/{id}/items``: the documented ``/tracks`` endpoint
+        returns 403 for development-mode apps since Spotify's 2026 API
+        changes, and the wrapper object is keyed ``item`` instead of
+        ``track``. Playlists the user does not own still 403 — the caller
+        should treat that as "browsable only via context playback".
+        """
         tracks: list[Track] = []
         offset = 0
         while len(tracks) < 500:
             data = (
                 self._request(
-                    "GET", f"/playlists/{playlist_id}/tracks", params={"limit": limit, "offset": offset}
+                    "GET", f"/playlists/{playlist_id}/items", params={"limit": limit, "offset": offset}
                 )
                 or {}
             )
             items = data.get("items", []) or []
-            for item in items:
-                if item is None:
+            for wrapper in items:
+                if wrapper is None or wrapper.get("is_local"):
                     continue
-                track_type = item.get("type")
-                if track_type is not None and track_type != "track":
+                obj = wrapper.get("item") or wrapper.get("track")
+                if not isinstance(obj, dict):
                     continue
-                track = parse_track(item.get("track"))
+                if obj.get("type") not in (None, "track") or obj.get("episode") is True:
+                    continue
+                track = parse_track(obj)
                 if track is not None:
                     tracks.append(track)
             if data.get("next") is None or not items:
@@ -367,7 +377,8 @@ def parse_playlist(item: dict | None) -> Playlist | None:
     if item is None:
         return None
     owner = item.get("owner") or {}
-    tracks = item.get("tracks") or {}
+    # 2026 dev-mode API renamed the "tracks" stub to "items"
+    tracks = item.get("tracks") or item.get("items") or {}
     return Playlist(
         id=item.get("id", ""),
         uri=item.get("uri", ""),

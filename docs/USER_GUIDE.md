@@ -175,6 +175,7 @@ tells you which one is broken.
 | "player device not ready yet" | librespot hasn't appeared in Connect yet — give it a few seconds; check the devices view (`6`). If it never appears, `uv run zpotify doctor`. |
 | "session expired — run `zpotify auth`" | Spotify expired your refresh token (they rotate these aggressively since 2026). `uv run zpotify auth` re-logs you in. |
 | 403 errors on playback control | Your account isn't Premium, or the track is unavailable in your market. |
+| "Spotify doesn't let personal API apps read playlists you don't own" | A Spotify policy for development-mode apps: track listings of playlists owned by other accounts (or editorial ones) are blocked. zpotify can still *play* them — press `enter` on the message. Your own and collaborative playlists list normally. |
 | No sound but the progress bar moves | Check the volume readout (bottom right) and your macOS output device; `doctor` prints which output it found. |
 | Choppy / stuttering audio | Another process may be starving the audio thread; try quitting heavy apps. File an issue with `doctor` output if it persists. |
 | Terminal left in a weird state after a crash | `reset` in the shell fixes it; zpotify restores the terminal on all normal exits including ctrl-c. |

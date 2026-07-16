@@ -410,32 +410,42 @@ def test_my_playlists_stops_on_next_none(monkeypatch):
     assert len(calls) == 2
 
 
-def test_playlist_tracks_filters_none_and_non_track_items(monkeypatch):
+def test_playlist_tracks_uses_items_endpoint_and_filters(monkeypatch):
+    # 2026 dev-mode API: /playlists/{id}/items with an "item" wrapper key
+    def track(id_):
+        return {"type": "track", "episode": False, "id": id_, "uri": f"u{id_}",
+                "name": "S", "artists": [{"name": "A"}],
+                "album": {"name": "Al"}, "duration_ms": 1000}
+
     page = {
         "items": [
             None,
-            {
-                "type": "track",
-                "track": {
-                    "id": "1",
-                    "uri": "u1",
-                    "name": "S1",
-                    "artists": [{"name": "A"}],
-                    "album": {"name": "Al"},
-                    "duration_ms": 1000,
-                },
-            },
-            {"type": "episode", "track": {"id": "ep1", "uri": "ue1", "name": "Ep", "artists": [], "album": {}, "duration_ms": 1}},
-            {"track": None},
+            {"item": track("1")},
+            {"item": {**track("ep"), "type": "episode", "episode": True}},
+            {"is_local": True, "item": track("loc")},
+            {"track": track("2")},  # legacy wrapper key still parses
+            {"item": None},
         ],
         "next": None,
     }
+    paths = []
 
-    monkeypatch.setattr(SpotifyAPI, "_request", lambda self, method, path, params=None, body=None: page)
+    def fake_request(self, method, path, params=None, body=None):
+        paths.append(path)
+        return page
+
+    monkeypatch.setattr(SpotifyAPI, "_request", fake_request)
     api = SpotifyAPI(DummyAuth())
     tracks = api.playlist_tracks("pl1")
 
-    assert [t.id for t in tracks] == ["1"]
+    assert paths == ["/playlists/pl1/items"]
+    assert [t.id for t in tracks] == ["1", "2"]
+
+
+def test_parse_playlist_reads_renamed_items_stub():
+    p = parse_playlist({"id": "p1", "uri": "spotify:playlist:p1", "name": "Mix",
+                        "owner": {"id": "u1"}, "items": {"total": 42}})
+    assert p is not None and p.total_tracks == 42
 
 
 def test_queue_parses_queue_key(monkeypatch):

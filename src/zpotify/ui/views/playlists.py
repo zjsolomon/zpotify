@@ -31,6 +31,7 @@ class PlaylistsView(View):
         self.current: Playlist | None = None
         self.loaded = False
         self.loading = False
+        self.blocked = False  # Spotify refuses to list this playlist's tracks
 
     def on_show(self, app) -> None:
         if not self.loaded and not self.loading:
@@ -87,17 +88,28 @@ class PlaylistsView(View):
         if playlist is None:
             return
         self.tracks.rows = []
+        self.blocked = False
         def done(rows):
             self.tracks.rows = rows
             self.tracks.selected = 0
             self.tracks.offset = 0
-        def failed(_exc):
-            self.mode = "lists"  # bounce back so the view isn't a dead end
+        def failed(exc):
+            from zpotify.api import ApiError
+            if isinstance(exc, ApiError) and exc.status == 403:
+                # Spotify blocks personal apps from listing playlists the
+                # user doesn't own — but playing them as a context works.
+                self.blocked = True
+            else:
+                self.mode = "lists"  # bounce back so the view isn't a dead end
         app.call_api(lambda: app.api.playlist_tracks(playlist.id), then=done,
                      refresh=False, describe="playlist", on_error=failed)
 
     def _play_selected(self, app) -> None:
-        if not self.tracks.rows or self.current is None:
+        if self.current is None:
+            return
+        if self.blocked or not self.tracks.rows:
+            # can't list the tracks, but Spotify will happily play the context
+            app.play_tracks(context_uri=self.current.uri)
             return
         app.play_tracks(context_uri=self.current.uri,
                         offset_position=self.tracks.selected)
@@ -122,5 +134,17 @@ class PlaylistsView(View):
             self.tracks.render(screen, x + 1, y + 1, w - 2, h - 1)
             common.wire_list_mouse(app, self.tracks, x + 1, y + 1, w - 2, h - 1,
                                    lambda i: self._play_selected(app))
+        elif self.blocked:
+            screen.put(x + 2, y + 2,
+                       "Spotify doesn't let personal API apps read playlists you",
+                       theme.DIM)
+            screen.put(x + 2, y + 3,
+                       "don't own — but it can still play. Press enter to play it.",
+                       theme.DIM)
+
+            def play_click(mouse):
+                if mouse.kind == "press":
+                    self._play_selected(app)
+            app.add_hit(x + 1, y + 2, w - 2, 2, play_click)
         else:
             screen.put(x + 2, y + 2, "loading…", theme.FAINT)
