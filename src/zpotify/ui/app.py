@@ -41,6 +41,9 @@ class App:
         self.screen = Screen()
         self.input = InputReader()
         self.workers = WorkerPool()
+        # Player commands run on ONE thread so pause/play/seek reach Spotify
+        # in the order they were pressed; the shared pool would race them.
+        self.control = WorkerPool(threads=1)
         self.analyzer = SpectrumAnalyzer(n_bins=48)
         self.audio = AudioEngine()
         self.audio.volume = config.volume
@@ -89,6 +92,7 @@ class App:
             sel = selectors.DefaultSelector()
             sel.register(self.input, selectors.EVENT_READ)
             sel.register(self.workers, selectors.EVENT_READ)
+            sel.register(self.control, selectors.EVENT_READ)
             next_frame = time.monotonic()
             try:
                 while not self.quit_requested:
@@ -100,6 +104,8 @@ class App:
                         if key.fileobj is self.input:
                             for event in self.input.read():
                                 self._dispatch(event)
+                        elif key.fileobj is self.control:
+                            self.control.drain()
                         else:
                             self.workers.drain()
                     if self.input.pending_escape:
@@ -212,8 +218,14 @@ class App:
     # --------------------------------------------------------------- actions
 
     def call_api(self, fn: Callable, then: Callable | None = None,
-                 refresh: bool = True, describe: str = "") -> None:
-        """Run an API call on a worker; surface errors; optionally re-poll."""
+                 refresh: bool = True, describe: str = "",
+                 on_error: Callable[[BaseException], None] | None = None) -> None:
+        """Run an API call on a worker; surface errors; optionally re-poll.
+
+        Player-state commands (refresh=True) go through the single-threaded
+        control pool so they reach Spotify in press order; on failure we poll
+        immediately to resync the optimistic UI with reality.
+        """
         def done(result, error):
             if error is not None:
                 if isinstance(error, NeedsLogin):
@@ -222,12 +234,17 @@ class App:
                     self.notify(f"{describe or 'api'}: {error.message}", error=True)
                 else:
                     self.notify(f"{describe or 'api'}: {error}", error=True)
+                if refresh:
+                    self._next_poll = 0.0  # resync optimistic UI with reality
+                if on_error is not None:
+                    on_error(error)
                 return
             if then is not None:
                 then(result)
             if refresh:
                 self._next_poll = time.monotonic() + 0.35  # let Spotify settle
-        self.workers.submit(fn, done)
+        pool = self.control if refresh else self.workers
+        pool.submit(fn, done)
 
     def play_tracks(self, uris: list[str] | None = None, context_uri: str | None = None,
                     offset_position: int | None = None, offset_uri: str | None = None) -> None:
@@ -262,9 +279,11 @@ class App:
             state.is_playing = True
             self._poll_at = time.monotonic()
             self._mark_action()
+            # raise the envelope NOW — if it only happened on API success, a
+            # failed/raced resume would leave the audio silenced forever
+            self._begin_fade_in(track_change=False)
             self.call_api(lambda: self.api.play(device_id=self.device_id),
-                          describe="resume",
-                          then=lambda _: self._begin_fade_in(track_change=False))
+                          describe="resume")
         else:
             self.notify("nothing to resume — pick a track (/ to search)")
 
@@ -448,6 +467,13 @@ class App:
             self.notify("restarting player…")
             self.workers.submit(self._restart_librespot, None)
         self._drive_track_fade()
+        # Self-heal: if Spotify says we're playing but the fade envelope is
+        # parked at 0 (a pause/resume race), ramp it back up — silence must
+        # never be a permanent state while playback is active.
+        state = self.playback
+        if state is not None and state.is_playing and not self._fade_out_started \
+                and self.audio.env_target == 0.0:
+            self.audio.fade_to(1.0, 0.15)
 
     def _drive_track_fade(self) -> None:
         """Fade out approaching the end of the track; recover on track repeat."""

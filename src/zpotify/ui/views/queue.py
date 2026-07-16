@@ -24,7 +24,10 @@ class QueueView(View):
         def done(rows):
             self.loading = False
             self.tracks.rows = rows
-        app.call_api(app.api.queue, then=done, refresh=False, describe="queue")
+        def failed(_exc):
+            self.loading = False  # stay retryable
+        app.call_api(app.api.queue, then=done, refresh=False, describe="queue",
+                     on_error=failed)
 
     def handle_key(self, app, key: Key) -> bool:
         if common.list_nav(self.tracks, key):

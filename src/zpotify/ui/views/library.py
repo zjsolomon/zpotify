@@ -27,11 +27,16 @@ class LibraryView(View):
             self.loading = False
             self.loaded = True
             self.tracks.rows = rows
+        def failed(_exc):
+            self.loading = False  # stay retryable
         app.call_api(app.api.saved_tracks, then=done, refresh=False,
-                     describe="library")
+                     describe="library", on_error=failed)
 
     def handle_key(self, app, key: Key) -> bool:
         if common.list_nav(self.tracks, key):
+            return True
+        if key.char == "R":
+            self.reload(app)
             return True
         if not self.tracks.rows:
             return False

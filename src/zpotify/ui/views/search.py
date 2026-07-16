@@ -66,8 +66,10 @@ class SearchView(View):
             self.tracks.offset = 0
             if results.tracks:
                 self.focused = False
+        def failed(_exc):
+            self.searching = False  # stay retryable
         app.call_api(lambda: app.api.search(text), then=done,
-                     refresh=False, describe="search")
+                     refresh=False, describe="search", on_error=failed)
 
     def _play_selected(self, app) -> None:
         rows = self.tracks.rows

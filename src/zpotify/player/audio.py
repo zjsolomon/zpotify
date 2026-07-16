@@ -212,6 +212,10 @@ class AudioEngine:
     def env(self) -> float:
         return self._env
 
+    @property
+    def env_target(self) -> float:
+        return self._env_target
+
     def _step_env(self, frames: int) -> float:
         """Advance the envelope by ``frames`` and return the block's mean gain."""
         with self._cond:

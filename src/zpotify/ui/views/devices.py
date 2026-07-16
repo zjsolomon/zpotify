@@ -39,7 +39,10 @@ class DevicesView(View):
         def done(rows):
             self.loading = False
             self.devices.rows = rows
-        app.call_api(app.api.devices, then=done, refresh=False, describe="devices")
+        def failed(_exc):
+            self.loading = False  # stay retryable
+        app.call_api(app.api.devices, then=done, refresh=False,
+                     describe="devices", on_error=failed)
 
     def handle_key(self, app, key: Key) -> bool:
         if common.list_nav(self.devices, key):
