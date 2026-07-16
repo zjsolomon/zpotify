@@ -66,7 +66,7 @@ uv tool uninstall zpotify # remove the command
 ```
 
 `--editable` links the repo's `src/`, so pulling/editing code applies
-immediately without reinstalling. Config always lives in `~/.config/zpotify.bak/`
+immediately without reinstalling. Config always lives in `~/.config/zpotify/`
 no matter where you run from. (If the project is ever published to PyPI,
 anyone could install it with just `uv tool install zpotify`.)
 
@@ -182,7 +182,7 @@ tells you which one is broken.
 
 ## Files on disk / resetting
 
-Everything lives in `~/.config/zpotify.bak/`:
+Everything lives in `~/.config/zpotify/`:
 
 | Path | Contents |
 |---|---|
@@ -190,5 +190,5 @@ Everything lives in `~/.config/zpotify.bak/`:
 | `tokens.json` | OAuth tokens (chmod 600) |
 | `librespot/` | librespot's credential + system cache |
 
-Full reset: `rm -rf ~/.config/zpotify.bak` and run `uv run zpotify` again.
+Full reset: `rm -rf ~/.config/zpotify` and run `uv run zpotify` again.
 Log out only: `uv run zpotify auth` (re-login) or delete `tokens.json`.

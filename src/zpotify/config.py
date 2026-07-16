@@ -1,6 +1,6 @@
 """Configuration and on-disk state for zpotify.
 
-Everything lives under ~/.config/zpotify.bak/:
+Everything lives under ~/.config/zpotify/:
   config.json   — client id + user settings
   tokens.json   — OAuth tokens (chmod 600)
   librespot/    — librespot credential/audio cache
@@ -13,10 +13,17 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_DIR = Path(os.environ.get("ZPOTIFY_CONFIG_DIR", "~/.config/zpotify.bak")).expanduser()
+CONFIG_DIR = Path(os.environ.get("ZPOTIFY_CONFIG_DIR", "~/.config/zpotify")).expanduser()
 CONFIG_FILE = CONFIG_DIR / "config.json"
 TOKENS_FILE = CONFIG_DIR / "tokens.json"
 LIBRESPOT_CACHE_DIR = CONFIG_DIR / "librespot"
+
+# Adopt a pre-existing config dir backup so
+# users keep their client id, tokens and librespot credentials.
+_LEGACY_DIR = Path("~/.config/zpotify.bak").expanduser()
+if not CONFIG_DIR.exists() and _LEGACY_DIR.is_dir() \
+        and "ZPOTIFY_CONFIG_DIR" not in os.environ:
+    _LEGACY_DIR.rename(CONFIG_DIR)
 
 REDIRECT_PORT = 8898
 REDIRECT_URI = f"http://127.0.0.1:{REDIRECT_PORT}/callback"
