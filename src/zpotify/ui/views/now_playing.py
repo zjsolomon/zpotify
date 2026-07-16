@@ -34,8 +34,8 @@ class NowPlayingView(View):
             screen.put(x + 3, cy + 2, album[:text_w], theme.DIM)
         else:
             screen.put(x + 3, cy, "nothing playing"[:text_w], theme.DIM)
-            screen.put(x + 3, cy + 2,
-                       "press / to search, 3 for playlists, ? for help"[:text_w],
+            # short enough to survive the wordmark clip on narrow terminals
+            screen.put(x + 3, cy + 2, "/ search · 3 playlists · ? help"[:text_w],
                        theme.FAINT)
 
         viz_y = y + info_h + 1
@@ -49,21 +49,25 @@ class NowPlayingView(View):
         self._render_up_next(app, screen, x + 2, viz_y, w - 4, viz_h)
 
     def _render_up_next(self, app, screen: Screen, x: int, y: int, w: int, h: int) -> None:
-        """Queue preview floating in the bottom-right of the visualizer area."""
+        """Boxed queue preview in the bottom-right of the visualizer area."""
         tracks = app.up_next[:10]
-        if not tracks or w < 44 or h < 5:
+        if not tracks or w < 46 or h < 6:
             return
-        box_w = min(46, w // 2)
-        rows = min(len(tracks), h - 2)
-        box_h = rows + 2
+        box_w = min(48, w // 2)
+        rows = min(len(tracks), h - 3)
+        box_h = rows + 2  # border top (with title) + rows + border bottom
         bx = x + w - box_w
         by = y + h - box_h
-        # solid backdrop so visualizer bars don't bleed through the text
+        # solid backdrop so visualizer bars don't bleed through
         screen.fill(bx - 1, by, box_w + 1, box_h, " ", theme.BASE)
-        screen.put(bx, by, "up next", theme.DIM)
+        screen.box(bx, by, box_w, box_h, theme.FAINT)
+        screen.put(bx + 2, by, " UP NEXT ", theme.DIM.with_(bold=True))
         for i, t in enumerate(tracks[:rows]):
+            number = f"{i + 1:>2} "
+            screen.put(bx + 2, by + 1 + i, number, theme.FAINT)
             line = f"{t.name} — {t.artist}"
-            screen.put(bx, by + 1 + i, line[:box_w - 1], theme.ROW_DIM)
+            screen.put(bx + 2 + len(number), by + 1 + i,
+                       line[:box_w - 5 - len(number)], theme.ROW_DIM)
 
     # bars: one column of width 2 per bin, height in cell-eighths
     def _render_spectrum(self, app, screen: Screen, x: int, y: int, w: int, h: int) -> None:
