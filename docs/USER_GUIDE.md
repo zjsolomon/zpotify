@@ -82,9 +82,13 @@ On launch, if nothing is playing anywhere on your account, zpotify stages a
 track paused on the now-playing screen, ready for `space`: whichever is newer
 of (a) what zpotify itself was last playing — with its position, playlist
 context, and up-next queue restored — or (b) your account's most recently
-played track from any device, phone included. Otherwise press `/`, type a song
-or artist, `enter` to search, arrow down to a result, `enter` again. Audio
-comes out of your default output device; the Spotify app is never involved.
+played track from any device, phone included. If the staged track has no saved
+queue, zpotify fills **UP NEXT · RADIO** with a radio-style list built from the
+track's artist (Spotify closed its real recommendations API to personal apps),
+and `space` plays the track with that list chained behind it — the radio you
+see is the radio you get. Otherwise press `/`, type a song or artist, `enter`
+to search, arrow down to a result, `enter` again. Audio comes out of your
+default output device; the Spotify app is never involved.
 
 ## The views
 
