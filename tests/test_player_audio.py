@@ -62,7 +62,7 @@ def test_latest_zero_pads_when_underfilled() -> None:
 
 def test_write_blocks_when_full_until_read_frees_space() -> None:
     eng = AudioEngine()
-    cap = eng._capacity
+    cap = eng._fill_limit
     eng._write(_frames(cap, value=100))  # exactly fills: no block
     assert eng._buffered == cap
 
@@ -83,7 +83,7 @@ def test_write_blocks_when_full_until_read_frees_space() -> None:
 
 def test_no_frames_are_dropped_under_backpressure() -> None:
     eng = AudioEngine()
-    total = eng._capacity * 3  # much more than fits at once
+    total = eng._fill_limit * 3  # much more than fits at once
     payload = np.arange(total, dtype=np.int16).reshape(-1, 1)
     payload = np.repeat(payload, 2, axis=1)
 
@@ -105,7 +105,7 @@ def test_no_frames_are_dropped_under_backpressure() -> None:
 
 def test_flush_empties_ring_and_unblocks_writer() -> None:
     eng = AudioEngine()
-    eng._write(_frames(eng._capacity, value=100))
+    eng._write(_frames(eng._fill_limit, value=100))
     done = threading.Event()
     writer = threading.Thread(
         target=lambda: (eng._write(_frames(64, value=9)), done.set()), daemon=True,
@@ -174,7 +174,7 @@ def test_fade_envelope_ramps_down_and_up() -> None:
     eng = AudioEngine(blocksize=441)  # 100 blocks/sec
     # exactly fill the ring: enough for the 20 blocks below, and _write must
     # not block (it would deadlock the test — there's no consumer thread)
-    eng._write(_frames(eng._capacity, value=10000))
+    eng._write(_frames(eng._fill_limit, value=10000))
     out = np.empty((441, 2), dtype=np.int16)
 
     eng._callback(out, 441, None, None)  # primes, env=1
@@ -216,7 +216,7 @@ def test_boundary_fade_fires_on_prime_transition() -> None:
     assert np.all(out == 0) and eng.boundary_fade_armed and eng.env == 1.0
 
     # prime: fade consumes, output ramps from silence
-    eng._write(_frames(eng._capacity - 128, value=10000))
+    eng._write(_frames(eng._fill_limit - 128, value=10000))
     eng._callback(out, 441, None, None)
     assert not eng.boundary_fade_armed
     first = abs(int(out[-1][0]))
@@ -248,7 +248,7 @@ def test_latency_reflects_buffered_frames() -> None:
 def test_boundary_fade_deadline_fires_without_underrun() -> None:
     eng = AudioEngine(blocksize=441)
     out = np.empty((441, 2), dtype=np.int16)
-    eng._write(_frames(eng._capacity, value=10000))
+    eng._write(_frames(eng._fill_limit, value=10000))
     eng._callback(out, 441, None, None)       # primes normally, env=1
     eng.set_env(0.0)                          # as after a completed fade-out
     eng.arm_boundary_fade(0.1, timeout=0.0)   # deadline already passed
@@ -258,3 +258,95 @@ def test_boundary_fade_deadline_fires_without_underrun() -> None:
         eng._callback(out, 441, None, None)
     assert np.all(out == 8007)                # sound came back
     assert eng.env == 1.0
+
+
+# -- crossfade -----------------------------------------------------------------
+
+def test_crossfade_mixes_tail_into_head() -> None:
+    sr = 44100
+    eng = AudioEngine(samplerate=sr)
+    eng.set_crossfade(0.1)               # X = 4410 frames
+    x = eng._xfade_frames
+    eng._write(_frames(8000, value=10000))   # track 1
+    eng.mark_boundary()                       # boundary at frame 8000
+    eng._write(_frames(x + 2000, value=-10000))  # track 2 head + spare
+
+    # before the window: pure track 1
+    out = _drain(eng, 8000 - x)
+    assert np.all(out == 10000)
+    # inside the window: mixed samples move from track1 toward track2
+    mix = _drain(eng, x)
+    assert len(mix) == x
+    assert mix[0][0] > 8000                # start ~ track 1
+    assert mix[-1][0] < -8000              # end ~ track 2
+    mid = mix[x // 2][0]
+    assert -3000 < mid < 3000              # halfway: roughly equal blend
+    # after the mix: cursor jumped past the head region already played
+    after = _drain(eng, 2000)
+    assert len(after) == 2000 and np.all(after == -10000)
+
+
+def test_crossfade_off_means_no_mixing() -> None:
+    eng = AudioEngine()
+    eng.set_crossfade(0.0)
+    eng._write(_frames(1000, value=7))
+    eng.mark_boundary()                    # ignored when off
+    eng._write(_frames(1000, value=9))
+    out = _drain(eng, 2000)
+    assert np.all(out[:1000] == 7) and np.all(out[1000:] == 9)
+
+
+def test_crossfade_head_underrun_degrades_to_fadeout() -> None:
+    eng = AudioEngine()
+    eng.set_crossfade(0.1)
+    x = eng._xfade_frames
+    eng._write(_frames(x, value=10000))    # exactly one window of tail
+    eng.mark_boundary()                    # no head has arrived at all
+    mix = _drain(eng, x)
+    assert len(mix) == x
+    assert mix[0][0] > 8000                # tail full at start
+    assert abs(int(mix[-1][0])) < 2000     # fades toward silence, no crash
+
+
+def test_set_crossfade_grows_fill_limit() -> None:
+    eng = AudioEngine()
+    base = eng._fill_limit
+    eng.set_crossfade(5.0)
+    assert eng._fill_limit >= 5 * eng.samplerate
+    eng.set_crossfade(0.0)
+    assert eng._fill_limit == base
+
+
+# -- hold / release (instant local pause) ----------------------------------------
+
+def test_hold_gates_output_and_release_resumes_in_place() -> None:
+    eng = AudioEngine(blocksize=64)
+    out = np.empty((64, 2), dtype=np.int16)
+    eng._write(_frames(eng._prime_frames + 640, value=1000))
+    eng._callback(out, 64, None, None)
+    assert np.all(out != 0)
+    buffered_before = eng._buffered
+
+    eng.hold(0.0)                          # instant hold
+    assert eng.held
+    eng._callback(out, 64, None, None)
+    assert np.all(out == 0)
+    assert eng._buffered == buffered_before  # nothing consumed while held
+
+    eng.release(0.0)
+    assert not eng.held
+    eng._callback(out, 64, None, None)
+    assert np.all(out != 0)                # resumes from the same spot
+
+
+def test_hold_with_fade_engages_after_ramp() -> None:
+    eng = AudioEngine(blocksize=441)
+    out = np.empty((441, 2), dtype=np.int16)
+    eng._write(_frames(eng._fill_limit, value=10000))
+    eng._callback(out, 441, None, None)    # primed, playing
+    eng.hold(0.05)                         # ~5 blocks of fade first
+    assert eng.held                        # pending counts as held
+    for _ in range(8):
+        eng._callback(out, 441, None, None)
+    assert np.all(out == 0)                # fully gated after the ramp
+    assert eng._held

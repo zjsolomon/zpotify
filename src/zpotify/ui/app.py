@@ -62,6 +62,7 @@ class App:
         self.analyzer = SpectrumAnalyzer(n_bins=48)
         self.audio = AudioEngine()
         self.audio.volume = config.volume
+        self.audio.set_crossfade(config.fade_seconds)
         self.librespot = self._make_librespot()
 
         from zpotify.ui.views import (DevicesView, LibraryView, NowPlayingView,
@@ -108,7 +109,6 @@ class App:
         self._librespot_auth_url: str | None = None
         self.search_overlay: TextInput | None = None
         self._search_overlay_rect: tuple[int, int, int, int] | None = None
-        self._fade_out_started = False
         self._player_restart_at: float | None = None  # debounced settings restart
         # Optimistic UI: local actions mutate playback state immediately; any
         # poll *requested before* the action is stale and must be discarded,
@@ -229,24 +229,11 @@ class App:
             self.workers.submit(self._restart_librespot, None)
         elif event.kind in ("playing", "paused", "stopped"):
             if event.kind == "playing" and "loading" in event.data.get("line", "").lower():
-                # Natural track change. Do NOT flush here: the previous
-                # track's tail is still draining through the ring/pipe and
-                # cutting it would clip every ending. (Manual skip/seek flush
-                # in their own callbacks.) Just re-arm the fade-in.
-                self._begin_fade_in(track_change=True)
+                # Natural track change: the previous track has been fully
+                # written (gapless disabled). Mark the boundary so the engine
+                # crossfades the outgoing tail into the incoming head.
+                self.audio.mark_boundary()
             self._next_poll = 0.0  # confirm via API soon
-
-    def _begin_fade_in(self, track_change: bool) -> None:
-        """Raise the fade envelope for newly starting audio."""
-        self._fade_out_started = False
-        if track_change and self.config.fade_seconds > 0:
-            # Anchor the fade-in to the moment the NEW track's audio reaches
-            # the speakers (engine prime transition) — mutating the envelope
-            # now would audibly duck/raise the OLD track's still-draining tail.
-            self.audio.arm_boundary_fade(self.config.fade_seconds)
-        else:
-            self.audio.disarm_boundary_fade()
-            self.audio.fade_to(1.0, 0.15 if self.config.pause_fade else 0.0)
 
     def _restart_librespot(self) -> None:
         time.sleep(1.0)
@@ -257,7 +244,7 @@ class App:
         if stream is not None:
             self.audio.attach(stream)
         self.audio.flush()
-        self.audio.fade_to(1.0, 0.25)
+        self.audio.release(0.25)
         self.workers.submit(self._find_our_device, self._on_device_found)
 
     def schedule_player_restart(self) -> None:
@@ -319,7 +306,7 @@ class App:
                                   offset_uri=offset_uri,
                                   position_ms=position_ms),
             describe="play",
-            then=lambda _: self._begin_fade_in(track_change=True))
+            then=lambda _: self.audio.release(0.15))
 
     def _mark_action(self) -> None:
         """An optimistic local mutation happened; stale polls must be dropped."""
@@ -349,8 +336,9 @@ class App:
                 self.play_tracks(uris=uris, position_ms=position)
             return
         if state is not None and state.is_playing:
-            if self.config.pause_fade:
-                self.audio.fade_to(0.0, 0.12)  # masks Connect latency, no click
+            # local hold = instant pause; buffer is kept so resume continues
+            # exactly where the listener left off
+            self.audio.hold(0.12 if self.config.pause_fade else 0.0)
             # optimistic: freeze the clock and flip the icon immediately
             state.progress_ms = self.progress_ms()
             state.is_playing = False
@@ -361,9 +349,9 @@ class App:
             state.is_playing = True
             self._poll_at = time.monotonic()
             self._mark_action()
-            # raise the envelope NOW — if it only happened on API success, a
-            # failed/raced resume would leave the audio silenced forever
-            self._begin_fade_in(track_change=False)
+            # release NOW — if it only happened on API success, a failed or
+            # raced resume would leave the audio gated forever
+            self.audio.release(0.15 if self.config.pause_fade else 0.0)
             self.call_api(lambda: self.api.play(device_id=self.device_id),
                           describe="resume")
         else:
@@ -461,7 +449,7 @@ class App:
         self._status_until = time.monotonic() + 4.0
 
     def progress_ms(self) -> int:
-        """Interpolated track position between polls."""
+        """Interpolated track position between polls (server clock)."""
         state = self.playback
         if state is None or state.track is None:
             return 0
@@ -469,6 +457,16 @@ class App:
         if state.is_playing:
             progress += int((time.monotonic() - self._poll_at) * 1000)
         return min(progress, state.track.duration_ms)
+
+    def display_progress_ms(self) -> int:
+        """Track position as *heard*: the server clock minus everything still
+        in flight (ring buffer + pipe). With crossfade on, librespot runs
+        several seconds ahead — without this the bar would lead the audio."""
+        state = self.playback
+        if state is None or state.track is None:
+            return 0
+        lag = int(self.audio.latency * 1000) if state.is_playing else 0
+        return max(0, self.progress_ms() - lag)
 
     def add_hit(self, x: int, y: int, w: int, h: int, handler: HitHandler) -> None:
         self._hits.append((x, y, w, h, handler))
@@ -612,33 +610,16 @@ class App:
             self._player_restart_at = None
             self.notify("restarting player…")
             self.workers.submit(self._restart_librespot, None)
-        self._drive_track_fade()
-        # Self-heal: if Spotify says we're playing but the fade envelope is
-        # parked at 0 (a pause/resume race), ramp it back up — silence must
-        # never be a permanent state while playback is active. An armed
-        # boundary fade is intentional silence-until-the-new-track: leave it.
+        # Self-heal: if Spotify says we're playing but our output is gated
+        # (a pause/resume race), ramp it back up — silence must never be a
+        # permanent state while playback is active. A held engine or an armed
+        # boundary fade is intentional; leave those alone.
         state = self.playback
-        if state is not None and state.is_playing and not self._fade_out_started \
+        if state is not None and state.is_playing \
                 and self.audio.env_target == 0.0 \
+                and not self.audio.held \
                 and not self.audio.boundary_fade_armed:
             self.audio.fade_to(1.0, 0.15)
-
-    def _drive_track_fade(self) -> None:
-        """Fade out approaching the end of the track; recover on track repeat."""
-        fade = self.config.fade_seconds
-        state = self.playback
-        if fade <= 0 or state is None or state.track is None:
-            return
-        remaining = state.track.duration_ms - self.progress_ms()
-        if state.is_playing and not self._fade_out_started \
-                and 0 < remaining <= fade * 1000:
-            self._fade_out_started = True
-            # `remaining` is server-clock; the audio we hear lags by the ring
-            # + pipe latency, so stretch the ramp to land at the audible end.
-            self.audio.fade_to(0.0, remaining / 1000 + self.audio.latency)
-        elif self._fade_out_started and self.progress_ms() < 5000:
-            # new/repeated track began without a librespot Loading event
-            self._begin_fade_in(track_change=True)
 
     def _on_playback(self, result, error, requested_at: float = float("inf")) -> None:
         if error is not None:
@@ -877,9 +858,9 @@ class App:
                              lambda m, action=action: m.kind == "press" and action())
                 bx += len(text) + 1
 
-        # time + progress
+        # time + progress (as heard, not as streamed)
         duration = track.duration_ms if track else 0
-        progress = self.progress_ms()
+        progress = self.display_progress_ms()
         time_label = f"{_mmss(progress)} / {_mmss(duration)}" if track else ""
         # volume readout (scroll wheel target)
         vol_label = f"vol {int(self.audio.volume * 100):3d}%"
