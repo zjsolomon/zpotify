@@ -1,4 +1,4 @@
-"""Entry point: `zpotify` runs the app; subcommands: auth, doctor, demo.
+"""Entry point: `zpotify` runs the app; subcommands: auth, doctor.
 
 The first run walks through setup in plain terminal mode (client id, Spotify
 login, librespot sign-in) before the TUI takes over the screen.
@@ -19,12 +19,8 @@ def main() -> int:
         return cmd_auth()
     if args[:1] == ["doctor"]:
         return cmd_doctor()
-    if args[:1] == ["demo"]:
-        from zpotify.term.demo import main as demo_main
-        demo_main()
-        return 0
     if args:
-        print("usage: zpotify [auth|doctor|demo]")
+        print("usage: zpotify [auth|doctor]")
         return 2
     return cmd_run()
 

@@ -47,10 +47,12 @@ class NowPlayingView(View):
         # 8-bit wordmark in the top-right corner (when there's room for it
         # beside the track info)
         text_w = w - 6
-        if w - 6 - wordmark.WIDTH - 4 > 20:
+        wordmark_shown = w - 6 - wordmark.WIDTH - 4 > 20
+        if wordmark_shown:
             wordmark.render(screen, x + w - wordmark.WIDTH - 3, y + 1,
                             body=theme.WHITE, accent=theme.GREEN, bg=theme.BG)
             text_w = w - 6 - wordmark.WIDTH - 4
+            info_h = max(info_h, wordmark.HEIGHT + 1)  # keep bars off the logo
         if track is not None:
             screen.put(x + 3, cy, track.name[:text_w],
                        Style(fg=theme.WHITE, bg=theme.BG, bold=True))

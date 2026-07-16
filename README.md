@@ -53,7 +53,6 @@ Then from anywhere:
 zpotify          # first run launches the setup wizard
 zpotify doctor   # health check when something's off
 zpotify auth     # redo the Spotify login
-zpotify demo     # terminal-engine demo (no Spotify account needed)
 ```
 
 (`--editable` links `src/`, so code changes apply without reinstalling.
@@ -85,7 +84,6 @@ tests/        89 unit tests: input decoding, rendering, API parsing, audio, FFT
 
 ```sh
 uv run pytest -q        # test suite
-uv run zpotify demo     # exercise the terminal engine interactively
 ```
 
 ## License

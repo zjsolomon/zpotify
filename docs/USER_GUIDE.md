@@ -76,7 +76,6 @@ anyone could install it with just `uv tool install zpotify`.)
 zpotify          # the app
 zpotify doctor   # health check: librespot, logins, audio, Premium
 zpotify auth     # redo the Spotify login only
-zpotify demo     # terminal-engine demo screen (no Spotify needed)
 ```
 
 Start something playing: press `/`, type a song or artist, `enter` to search,

@@ -570,7 +570,7 @@ class App:
     def _render_header(self, cols: int) -> None:
         screen = self.screen
         screen.fill(0, 0, cols, 1, " ", theme.TAB_INACTIVE)
-        labels = [f" {i + 1} {v.name} " for i, v in enumerate(self.views)]
+        labels = [f"{i + 1} {v.name}" for i, v in enumerate(self.views)]
         ranges = tabs(screen, 0, 0, labels, self.view_index,
                       theme.TAB_ACTIVE, theme.TAB_INACTIVE)
         for i, (x0, x1) in enumerate(ranges):

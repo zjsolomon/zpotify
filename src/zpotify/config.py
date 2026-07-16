@@ -18,13 +18,6 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 TOKENS_FILE = CONFIG_DIR / "tokens.json"
 LIBRESPOT_CACHE_DIR = CONFIG_DIR / "librespot"
 
-# Adopt a pre-existing config dir backup so
-# users keep their client id, tokens and librespot credentials.
-_LEGACY_DIR = Path("~/.config/zpotify.bak").expanduser()
-if not CONFIG_DIR.exists() and _LEGACY_DIR.is_dir() \
-        and "ZPOTIFY_CONFIG_DIR" not in os.environ:
-    _LEGACY_DIR.rename(CONFIG_DIR)
-
 REDIRECT_PORT = 8898
 REDIRECT_URI = f"http://127.0.0.1:{REDIRECT_PORT}/callback"
 DEVICE_NAME = "zpotify"
