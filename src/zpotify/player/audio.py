@@ -81,6 +81,7 @@ class AudioEngine:
         # the natural inter-track underrun (gapless is disabled) — then ramps
         # 0 -> 1. Anchors fade-ins to the audio, not the earlier API events.
         self._boundary_fade_seconds: float | None = None
+        self._boundary_deadline = 0.0
 
         # Visualizer tap: mono float of the most recently *played* frames.
         self._tap_len = 8192
@@ -206,11 +207,19 @@ class AudioEngine:
             else:
                 self._env_rate = (target - self._env) / (seconds * self.samplerate)
 
-    def arm_boundary_fade(self, seconds: float) -> None:
+    def arm_boundary_fade(self, seconds: float, timeout: float = 2.5) -> None:
         """Fade in from silence when the next track's audio starts playing
-        (the next unprimed->primed transition in the callback)."""
+        (the next unprimed->primed transition in the callback).
+
+        If no underrun occurs within ``timeout`` — librespot loaded the next
+        track before the ring drained, so audio flowed continuously — the
+        fade fires anyway from the current envelope. Without this fallback a
+        fade-out that reached 0 would leave the new track permanently silent.
+        """
+        import time as _time
         with self._cond:
             self._boundary_fade_seconds = max(0.05, seconds)
+            self._boundary_deadline = _time.monotonic() + timeout
 
     def disarm_boundary_fade(self) -> None:
         with self._cond:
@@ -331,6 +340,15 @@ class AudioEngine:
                         outdata[:] = 0
                         self._level += (0.0 - self._level) * 0.3  # decay while gated
                         return
+                elif self._boundary_fade_seconds is not None:
+                    import time as _time
+                    if _time.monotonic() > self._boundary_deadline:
+                        # no underrun happened: audio flowed continuously into
+                        # the next track — fire the fade from where env sits
+                        seconds = self._boundary_fade_seconds
+                        self._boundary_fade_seconds = None
+                        self._env_target = 1.0
+                        self._env_rate = (1.0 - self._env) / (seconds * self.samplerate)
             scratch = self._scratch if frames == self.blocksize else np.empty(
                 (frames, self.channels), dtype=np.int16
             )

@@ -64,7 +64,8 @@ Inside the repo, `uv run zpotify` works too.)
 
 `space` play/pause · `n`/`b` next/prev · `,`/`.` seek ±10s · `+`/`-` volume ·
 `/` floating search from anywhere (`enter` searches, `/` or `esc` closes) ·
-`1-7` views (7 = settings) · `h`/`l` previous/next tab · `j`/`k` navigate ·
+`1-7` views (7 = settings) · `tab`/`shift+tab` cycle tabs · `j`/`k`/`h`/`l` vim
+navigation in views ·
 `enter` play · `a` queue · `s` shuffle · `r` repeat · `v` visualizer · `?` help ·
 `q` quit — plus full mouse support (click rows/tabs/buttons, scroll wheel,
 click the progress bar to seek).

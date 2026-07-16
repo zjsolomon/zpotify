@@ -36,13 +36,10 @@ class SearchView(View):
             if key.name == "esc":
                 self.focused = False
                 return True
-            if key.name in ("down", "tab"):
+            if key.name == "down":
                 self.focused = False
                 return True
             return self.query.handle_key(key)
-        if key.name == "tab":
-            self.focused = True
-            return True
         if common.list_nav(self.tracks, key):
             return True
         if key.name == "enter":

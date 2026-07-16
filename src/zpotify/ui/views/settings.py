@@ -117,10 +117,10 @@ class SettingsView(View):
     def handle_key(self, app, key: Key) -> bool:
         if common.list_nav(self.listview, key):
             return True
-        if key.name in ("enter", "right", "space"):
+        if key.name in ("enter", "right", "space") or key.char == "l":
             self._change(app, 1)
             return True
-        if key.name == "left":
+        if key.name == "left" or key.char == "h":
             self._change(app, -1)
             return True
         return False

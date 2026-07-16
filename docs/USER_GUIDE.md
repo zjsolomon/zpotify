@@ -122,7 +122,8 @@ Switch with keys `1`–`7` or click the tabs.
 | Key | Action |
 |---|---|
 | `1`–`7` | switch view (7 = settings) |
-| `h` / `l` | previous / next tab |
+| `tab` / `shift+tab` | next / previous tab |
+| `h` / `l` | vim-style within views: `h` backs out of a playlist, `h`/`l` cycle a setting's value |
 | `/` | open a floating search box from anywhere; `enter` searches and jumps to the search view, `/` or `esc` dismisses |
 | `j` / `k` or arrows | move through lists |
 | `pgup` / `pgdn`, `home` / `end` | page / jump in lists |

@@ -84,6 +84,12 @@ class App:
         self.up_next_is_radio = False
         self._radio_tries = 0
         self._radio_retry_at: float | None = None
+        # Live-queue top-up: UP NEXT should never sit (nearly) empty, so short
+        # queues are padded with current-artist tracks. Pooled per artist so
+        # the 15s queue poll doesn't refetch constantly.
+        self._filler_pool: list[Track] = []
+        self._filler_key: str | None = None
+        self._filler_fetching = False
         self.up_next: list[Track] = []   # queue preview for the now-playing view
         self._next_queue_poll = 0.0
         self._last_track_id: str | None = None
@@ -534,10 +540,10 @@ class App:
             self.help_visible = True
         elif char == "/":
             self.search_overlay = TextInput()
-        elif char == "h":
-            self.switch_view((self.view_index - 1) % len(self.views))
-        elif char == "l":
+        elif name == "tab":
             self.switch_view((self.view_index + 1) % len(self.views))
+        elif name == "backtab":  # shift+tab
+            self.switch_view((self.view_index - 1) % len(self.views))
         elif char and char in "1234567":
             self.switch_view(int(char) - 1)
         elif not view.wants_text:
@@ -689,26 +695,29 @@ class App:
             self._radio_tries = 0
             self.workers.submit(self._fetch_radio, self._on_radio)
 
+    def _fetch_artist_tracks(self, seed: Track, exclude: set[str],
+                             limit: int) -> list[Track]:
+        """Worker: radio-ish list built from the seed track's artist search.
+        (Spotify closed the recommendations endpoint to personal apps, so
+        this is the closest honest approximation.)"""
+        query = seed.artists[0] if seed.artists else seed.name
+        results = self.api.search(query, limit=20)
+        seen = set(exclude)
+        out: list[Track] = []
+        for t in results.tracks:
+            if t.id in seen or not t.uri:
+                continue
+            seen.add(t.id)
+            out.append(t)
+            if len(out) >= limit:
+                break
+        return out
+
     def _fetch_radio(self) -> list[Track]:
-        """Worker: radio-ish list — the staged track's artist searched, other
-        popular tracks taken. (Spotify closed the recommendations endpoint to
-        personal apps, so this is the closest honest approximation.)"""
         state = self.playback
         if state is None or state.track is None:
             return []
-        track = state.track
-        query = track.artists[0] if track.artists else track.name
-        results = self.api.search(query, limit=20)
-        seen = {track.id}
-        radio = []
-        for t in results.tracks:
-            if t.id in seen:
-                continue
-            seen.add(t.id)
-            radio.append(t)
-            if len(radio) >= 10:
-                break
-        return radio
+        return self._fetch_artist_tracks(state.track, {state.track.id}, 10)
 
     def _on_radio(self, result, error) -> None:
         if not self._staged or self.up_next:
@@ -758,6 +767,39 @@ class App:
         if error is None and isinstance(result, list):
             self.up_next = result
             self.up_next_is_radio = False
+            self._maybe_top_up_queue()
+
+    def _seed_key(self, track: Track) -> str:
+        return track.artists[0] if track.artists else track.name
+
+    def _maybe_top_up_queue(self) -> None:
+        """Pad a short live queue with current-artist tracks so UP NEXT always
+        offers something to play next. Fillers are display + direct-play
+        options (enter chains from them); they are not pushed into Spotify's
+        real queue."""
+        state = self.playback
+        if (state is None or state.track is None or self._staged
+                or len(self.up_next) >= 10 or self._filler_fetching):
+            return
+        seed = state.track
+        exclude = {seed.id} | {t.id for t in self.up_next}
+        if self._filler_key == self._seed_key(seed):
+            fresh = [t for t in self._filler_pool if t.id not in exclude]
+            if fresh:
+                self.up_next = self.up_next + fresh[:10 - len(self.up_next)]
+                return
+        self._filler_fetching = True
+        key = self._seed_key(seed)
+        self.workers.submit(
+            lambda: (key, self._fetch_artist_tracks(seed, exclude, 20)),
+            self._on_filler)
+
+    def _on_filler(self, result, error) -> None:
+        self._filler_fetching = False
+        if error is not None or not result:
+            return
+        self._filler_key, self._filler_pool = result
+        self._maybe_top_up_queue()
 
     def _render(self) -> None:
         screen = self.screen
@@ -879,7 +921,8 @@ class App:
             ("v", "visualizer: spectrum / wave / off"),
             ("/", "search from anywhere (floating box)"),
             ("1-7", "switch view (7 = settings)"),
-            ("h / l", "previous / next tab"),
+            ("tab / shift+tab", "next / previous tab"),
+            ("h / l", "back / cycle within a view (vim)"),
             ("j k / arrows", "navigate lists"), ("enter", "play selection"),
             ("↑ ↓ + enter", "pick a song from UP NEXT (now playing)"),
             ("f", "save/unsave track (library)"), ("q", "quit (y confirms)"),

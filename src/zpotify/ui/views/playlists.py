@@ -58,7 +58,7 @@ class PlaylistsView(View):
             else:
                 self._play_selected(app)
             return True
-        if key.name in ("esc", "left"):
+        if key.name in ("esc", "left") or key.char == "h":
             if self.mode == "tracks":
                 self.mode = "lists"
                 return True

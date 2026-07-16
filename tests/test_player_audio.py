@@ -243,3 +243,18 @@ def test_latency_reflects_buffered_frames() -> None:
     assert abs(base - 0.37) < 1e-6  # empty ring: just the pipe estimate
     eng._write(_frames(44100 // 10))  # +0.1s
     assert abs(eng.latency - (0.47)) < 0.005
+
+
+def test_boundary_fade_deadline_fires_without_underrun() -> None:
+    eng = AudioEngine(blocksize=441)
+    out = np.empty((441, 2), dtype=np.int16)
+    eng._write(_frames(eng._capacity, value=10000))
+    eng._callback(out, 441, None, None)       # primes normally, env=1
+    eng.set_env(0.0)                          # as after a completed fade-out
+    eng.arm_boundary_fade(0.1, timeout=0.0)   # deadline already passed
+    eng._callback(out, 441, None, None)       # no underrun ever happens
+    assert not eng.boundary_fade_armed        # fallback consumed it
+    for _ in range(12):
+        eng._callback(out, 441, None, None)
+    assert np.all(out == 8007)                # sound came back
+    assert eng.env == 1.0
