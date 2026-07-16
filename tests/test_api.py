@@ -472,3 +472,18 @@ def test_parse_track_synthesizes_uri_from_id():
     assert t.uri == "spotify:track:abc123"
     t2 = parse_track({"name": "no id at all", "artists": [], "album": {}, "duration_ms": 1})
     assert t2 is not None and t2.uri == ""
+
+
+def test_2xx_with_junk_or_gzip_body_returns_none_or_parses(monkeypatch):
+    import gzip as _gzip
+    bodies = iter([b" \n", b"OK", _gzip.compress(b'{"ok": true}'), b'{"a": 1}'])
+
+    def fake_urlopen(req, *a, **kw):
+        return FakeResponse(next(bodies))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    api = SpotifyAPI(DummyAuth())
+    assert api._request("PUT", "/me/player/play") is None   # whitespace
+    assert api._request("PUT", "/me/player/pause") is None  # non-JSON junk
+    assert api._request("GET", "/me") == {"ok": True}       # gzip unpacked
+    assert api._request("GET", "/me") == {"a": 1}           # normal JSON

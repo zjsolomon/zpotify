@@ -74,9 +74,17 @@ class SpotifyAPI:
         try:
             with urllib.request.urlopen(req) as resp:
                 raw = resp.read()
-                if not raw:
+                if raw[:2] == b"\x1f\x8b":  # gzip body urllib didn't decode
+                    import gzip
+                    raw = gzip.decompress(raw)
+                if not raw.strip():
                     return None
-                return json.loads(raw.decode("utf-8"))
+                try:
+                    return json.loads(raw.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    # Player commands sometimes 200 with a junk body; the
+                    # command still succeeded — don't surface a parse error.
+                    return None
         except urllib.error.HTTPError as exc:
             return self._handle_error(
                 exc, method, path, params, body, _retries_429, _retried_401, _retried_5xx
