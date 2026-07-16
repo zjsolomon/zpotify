@@ -48,6 +48,7 @@ class LibraryView(View):
             app.call_api(lambda: app.api.add_to_queue(track.uri),
                          refresh=False, describe="queue")
             app.notify(f"queued: {track.name}")
+            app.refresh_queue_soon()
             return True
         if key.char == "f":
             index = self.tracks.selected

@@ -33,18 +33,37 @@ class NowPlayingView(View):
             album = track.album + ("  [E]" if track.explicit else "")
             screen.put(x + 3, cy + 2, album[:text_w], theme.DIM)
         else:
-            screen.put(x + 3, cy, "nothing playing", theme.DIM)
+            screen.put(x + 3, cy, "nothing playing"[:text_w], theme.DIM)
             screen.put(x + 3, cy + 2,
-                       "press / to search, 3 for playlists, ? for help", theme.FAINT)
+                       "press / to search, 3 for playlists, ? for help"[:text_w],
+                       theme.FAINT)
 
         viz_y = y + info_h + 1
         viz_h = h - info_h - 2
-        if viz_h < 2 or app.visualizer == "off":
+        if viz_h < 2:
             return
         if app.visualizer == "spectrum":
             self._render_spectrum(app, screen, x + 2, viz_y, w - 4, viz_h)
-        else:
+        elif app.visualizer == "wave":
             self._render_wave(app, screen, x + 2, viz_y, w - 4, viz_h)
+        self._render_up_next(app, screen, x + 2, viz_y, w - 4, viz_h)
+
+    def _render_up_next(self, app, screen: Screen, x: int, y: int, w: int, h: int) -> None:
+        """Queue preview floating in the bottom-right of the visualizer area."""
+        tracks = app.up_next[:10]
+        if not tracks or w < 44 or h < 5:
+            return
+        box_w = min(46, w // 2)
+        rows = min(len(tracks), h - 2)
+        box_h = rows + 2
+        bx = x + w - box_w
+        by = y + h - box_h
+        # solid backdrop so visualizer bars don't bleed through the text
+        screen.fill(bx - 1, by, box_w + 1, box_h, " ", theme.BASE)
+        screen.put(bx, by, "up next", theme.DIM)
+        for i, t in enumerate(tracks[:rows]):
+            line = f"{t.name} — {t.artist}"
+            screen.put(bx, by + 1 + i, line[:box_w - 1], theme.ROW_DIM)
 
     # bars: one column of width 2 per bin, height in cell-eighths
     def _render_spectrum(self, app, screen: Screen, x: int, y: int, w: int, h: int) -> None:

@@ -87,6 +87,7 @@ class SearchView(View):
         app.call_api(lambda: app.api.add_to_queue(track.uri),
                      refresh=False, describe="queue")
         app.notify(f"queued: {track.name}")
+        app.refresh_queue_soon()
 
     def render(self, app, screen: Screen, x: int, y: int, w: int, h: int) -> None:
         screen.put(x + 2, y + 1, "search:", theme.DIM)

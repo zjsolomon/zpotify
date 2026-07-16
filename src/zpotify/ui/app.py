@@ -57,6 +57,9 @@ class App:
         self.view_index = 0
 
         self.playback: PlaybackState | None = None
+        self.up_next: list[Track] = []   # queue preview for the now-playing view
+        self._next_queue_poll = 0.0
+        self._last_track_id: str | None = None
         self._poll_at = 0.0          # monotonic time of last successful poll
         self._next_poll = 0.0
         self.device_id: str | None = None
@@ -475,6 +478,9 @@ class App:
                 lambda result, error, t0=now: self._on_playback(result, error, t0))
         if self.visualizer == "spectrum":
             self.analyzer.update(self.audio.latest(2048))
+        if self.device_id is not None and now >= self._next_queue_poll:
+            self._next_queue_poll = now + 15.0
+            self.workers.submit(self.api.queue, self._on_queue)
         if self._player_restart_at is not None and now >= self._player_restart_at:
             self._player_restart_at = None
             self.notify("restarting player…")
@@ -512,6 +518,17 @@ class App:
             return  # snapshot predates a local optimistic action: stale
         self.playback = result
         self._poll_at = time.monotonic()
+        track_id = result.track.id if result and result.track else None
+        if track_id != self._last_track_id:
+            self._last_track_id = track_id
+            self.refresh_queue_soon()
+
+    def refresh_queue_soon(self) -> None:
+        self._next_queue_poll = 0.0
+
+    def _on_queue(self, result, error) -> None:
+        if error is None and isinstance(result, list):
+            self.up_next = result
 
     def _render(self) -> None:
         screen = self.screen
