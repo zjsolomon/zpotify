@@ -125,7 +125,8 @@ Switch with keys `1`–`7` or click the tabs.
 | `esc` | leave search input / go back from playlist tracks |
 | `v` | cycle visualizer: spectrum → wave → off |
 | `?` | help overlay (any key closes it) |
-| `q` / `ctrl-c` | quit |
+| `q` | quit — shows a confirmation popup; `y` quits, any other key (or a click) cancels |
+| `ctrl-c` | quit immediately, no confirmation |
 
 ## Mouse reference
 

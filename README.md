@@ -1,4 +1,4 @@
-# zpotify
+<img src="Assets/banner.png" alt="zpotify" width="640">
 
 Spotify, entirely in your terminal. The official Spotify app never opens.
 
