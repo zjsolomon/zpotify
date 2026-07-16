@@ -394,9 +394,13 @@ def parse_track(item: dict | None) -> Track | None:
         return None
     album = item.get("album") or {}
     artists = tuple(a.get("name", "") for a in item.get("artists", []) or [])
+    # Degraded dev-mode responses occasionally omit `uri`; the id is always
+    # present, and a synthesized uri beats an empty one poisoning a payload.
+    track_id = item.get("id", "")
+    uri = item.get("uri") or (f"spotify:track:{track_id}" if track_id else "")
     return Track(
-        id=item.get("id", ""),
-        uri=item.get("uri", ""),
+        id=track_id,
+        uri=uri,
         name=item.get("name", ""),
         artists=artists,
         album=album.get("name", ""),

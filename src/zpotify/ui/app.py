@@ -290,6 +290,16 @@ class App:
         if self.device_id is None:
             self.notify("player device not ready yet", error=True)
             return
+        if uris is not None:
+            # One malformed uri (e.g. from a degraded API response) makes
+            # Spotify reject the whole payload — drop anything suspect.
+            uris = [u for u in uris
+                    if isinstance(u, str) and u.startswith("spotify:track:")
+                    and len(u) > len("spotify:track:")]
+            if not uris and context_uri is None:
+                self.notify("nothing playable in that selection", error=True)
+                return
+            uris = uris or None
         self._mark_action()
         self.call_api(
             lambda: self.api.play(device_id=self.device_id, uris=uris,

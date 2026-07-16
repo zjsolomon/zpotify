@@ -185,3 +185,22 @@ def test_fetch_radio_excludes_current_and_dedupes(app, monkeypatch) -> None:
     assert TRACK.id not in [t.id for t in radio]
     assert len(radio) == 10
     assert len({t.id for t in radio}) == 10
+
+
+def test_play_tracks_filters_malformed_uris(app, monkeypatch) -> None:
+    calls = {}
+    monkeypatch.setattr(app.api, "play", lambda **kw: calls.update(kw))
+    # run the queued call synchronously instead of on the control pool
+    monkeypatch.setattr(app, "call_api",
+                        lambda fn, then=None, refresh=True, describe="",
+                        on_error=None: fn())
+    app.play_tracks(uris=["spotify:track:good1", "", "spotify:track:",
+                          None, "spotify:episode:x", "spotify:track:good2"])
+    assert calls["uris"] == ["spotify:track:good1", "spotify:track:good2"]
+
+    notes = []
+    monkeypatch.setattr(app, "notify", lambda m, error=False: notes.append(m))
+    calls.clear()
+    app.play_tracks(uris=["", None])
+    assert not calls                     # nothing sent to Spotify
+    assert "nothing playable" in notes[0]

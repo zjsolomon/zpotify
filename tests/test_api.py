@@ -463,3 +463,12 @@ def test_queue_parses_queue_key(monkeypatch):
     api = SpotifyAPI(DummyAuth())
     result = api.queue()
     assert [t.id for t in result] == ["1"]
+
+
+def test_parse_track_synthesizes_uri_from_id():
+    t = parse_track({"id": "abc123", "name": "S", "artists": [{"name": "A"}],
+                     "album": {"name": "Al"}, "duration_ms": 1000})
+    assert t is not None
+    assert t.uri == "spotify:track:abc123"
+    t2 = parse_track({"name": "no id at all", "artists": [], "album": {}, "duration_ms": 1})
+    assert t2 is not None and t2.uri == ""
