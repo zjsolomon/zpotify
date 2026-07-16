@@ -213,17 +213,23 @@ class SpotifyAPI:
 
     # -- search / library ---------------------------------------------------------
 
+    # Spotify's 2026 dev-mode API rejects search limits above 10
+    _SEARCH_PAGE = 10
+
     def search(
         self,
         q: str,
         types: Iterable[str] = ("track", "album", "artist", "playlist"),
-        limit: int = 20,
+        limit: int = 30,
         offset: int = 0,
     ) -> SearchResults:
+        """Search. ``limit`` applies to tracks, fetched in pages of 10; the
+        other types get one page of 10 each."""
+        types = tuple(types)
         params = {
             "q": q,
             "type": ",".join(types),
-            "limit": limit,
+            "limit": min(limit, self._SEARCH_PAGE),
             "offset": offset,
         }
         data = self._request("GET", "/search", params=params) or {}
@@ -234,7 +240,25 @@ class SpotifyAPI:
         playlists = [
             p for p in (parse_playlist(i) for i in data.get("playlists", {}).get("items", []) or []) if p
         ]
-        return SearchResults(tracks=tracks, albums=albums, artists=artists, playlists=playlists)
+
+        # page tracks up to `limit` (track-only requests from here on)
+        page = data.get("tracks", {})
+        consumed = len(page.get("items", []) or [])  # raw items, incl. filtered
+        while "track" in types and len(tracks) < limit and page.get("next"):
+            data = self._request("GET", "/search", params={
+                "q": q, "type": "track", "limit": self._SEARCH_PAGE,
+                "offset": offset + consumed}) or {}
+            page = data.get("tracks", {})
+            items = page.get("items", []) or []
+            if not items:
+                break
+            consumed += len(items)
+            tracks.extend(t for t in (parse_track(i) for i in items) if t)
+        # Spotify's search pages overlap; drop repeated ids, keep order
+        seen: set[str] = set()
+        tracks = [t for t in tracks if not (t.id in seen or seen.add(t.id))]
+        return SearchResults(tracks=tracks[:limit], albums=albums,
+                             artists=artists, playlists=playlists)
 
     def my_playlists(self, limit: int = 50) -> list[Playlist]:
         playlists: list[Playlist] = []
