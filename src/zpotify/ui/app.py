@@ -186,7 +186,10 @@ class App:
             self.workers.submit(self._restart_librespot, None)
         elif event.kind in ("playing", "paused", "stopped"):
             if event.kind == "playing" and "loading" in event.data.get("line", "").lower():
-                self.audio.flush()  # track change: drop stale buffered audio
+                # Natural track change. Do NOT flush here: the previous
+                # track's tail is still draining through the ring/pipe and
+                # cutting it would clip every ending. (Manual skip/seek flush
+                # in their own callbacks.) Just re-arm the fade-in.
                 self._begin_fade_in(track_change=True)
             self._next_poll = 0.0  # confirm via API soon
 

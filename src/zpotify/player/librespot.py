@@ -119,6 +119,10 @@ class Librespot:
             "--volume-ctrl", "fixed",
             "--initial-volume", "100",
             "--disable-audio-cache",
+            # Gapless prefetch makes librespot log "Loading <next>" seconds
+            # before the audible boundary, which breaks boundary-aligned
+            # fades and flushes downstream. The cost is a tiny inter-track gap.
+            "--disable-gapless",
         ]
         if self.normalization:
             argv.append("--enable-volume-normalisation")
