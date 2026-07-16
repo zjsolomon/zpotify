@@ -245,3 +245,20 @@ def test_pending_track_discarded_after_user_action(app) -> None:
     app._tick(time.monotonic())
     assert app._pending_playback is None
     assert app.playback.track.id == a.id      # stale snapshot not adopted
+
+
+def test_manual_play_flushes_old_audio_and_boundaries(app, monkeypatch) -> None:
+    """Enter on any list is a plain play: never crossfaded from the old track."""
+    thens = []
+    monkeypatch.setattr(app, "call_api",
+                        lambda fn, then=None, refresh=True, describe="",
+                        on_error=None: thens.append(then))
+    monkeypatch.setattr(app.api, "play", lambda **kw: None)
+    app.audio.set_crossfade(2.0)
+    app.audio._write(__import__("numpy").full((100, 2), 5, dtype="int16"))
+    app.audio.mark_boundary()               # pretend a transition was pending
+    app.play_tracks(uris=["spotify:track:" + "q" * 22])
+    assert thens and thens[-1] is not None
+    thens[-1](None)                          # simulate API success
+    assert app.audio._buffered == 0          # old audio gone
+    assert not app.audio.transition_pending  # boundary cleared: not tied

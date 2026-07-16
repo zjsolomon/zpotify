@@ -309,7 +309,9 @@ class App:
                                   offset_uri=offset_uri,
                                   position_ms=position_ms),
             describe="play",
-            then=lambda _: self.audio.release(0.15))
+            # manual play: cut the old audio (no crossfade — that's only for
+            # natural track advance) and ungate if we were pause-held
+            then=lambda _: (self.audio.flush(), self.audio.release(0.15)))
 
     def _mark_action(self) -> None:
         """An optimistic local mutation happened; stale polls must be dropped."""
@@ -462,13 +464,22 @@ class App:
         return min(progress, state.track.duration_ms)
 
     def display_progress_ms(self) -> int:
-        """Track position as *heard*: the server clock minus everything still
-        in flight (ring buffer + pipe). With crossfade on, librespot runs
-        several seconds ahead — without this the bar would lead the audio."""
+        """Track position as *heard*, not as streamed.
+
+        After a track boundary the engine counts the audible position exactly
+        (crossed_ms), so the bar moves from 0:00 the moment the incoming song
+        becomes audible in the crossfade. Otherwise (fresh plays, seeks —
+        anything that flushed) fall back to server clock minus in-flight
+        audio (ring + pipe)."""
         state = self.playback
         if state is None or state.track is None:
             return 0
-        lag = int(self.audio.latency * 1000) if state.is_playing else 0
+        if not state.is_playing:
+            return self.progress_ms()
+        crossed = self.audio.crossed_ms
+        if crossed is not None:
+            return min(self.progress_ms(), max(0, crossed))
+        lag = int(self.audio.latency * 1000)
         return max(0, self.progress_ms() - lag)
 
     def add_hit(self, x: int, y: int, w: int, h: int, handler: HitHandler) -> None:

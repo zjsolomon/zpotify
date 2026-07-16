@@ -296,25 +296,68 @@ def test_crossfade_off_means_no_mixing() -> None:
     assert np.all(out[:1000] == 7) and np.all(out[1000:] == 9)
 
 
-def test_crossfade_head_underrun_degrades_to_fadeout() -> None:
+def test_crossfade_without_head_plays_tail_unmixed() -> None:
+    """The mix must never start against an empty head: the tail plays plainly
+    to the boundary, then the (late) next track starts as a hard transition."""
     eng = AudioEngine()
     eng.set_crossfade(0.1)
     x = eng._xfade_frames
     eng._write(_frames(x, value=10000))    # exactly one window of tail
     eng.mark_boundary()                    # no head has arrived at all
-    mix = _drain(eng, x)
-    assert len(mix) == x
-    assert mix[0][0] > 8000                # tail full at start
-    assert abs(int(mix[-1][0])) < 2000     # fades toward silence, no crash
+    out = _drain(eng, x)
+    assert len(out) == x
+    assert np.all(out == 10000)            # NOT faded against silence
+    eng._write(_frames(500, value=-10000))  # head arrives late
+    late = _drain(eng, 500)
+    assert np.all(late == -10000)          # plain start, no mixing
 
 
-def test_set_crossfade_grows_fill_limit() -> None:
+def test_crossfade_shrinks_to_available_head() -> None:
+    """Head buffered for only half the window: the mix defers while playing
+    tail, and the overlap becomes what the stream can sustain."""
+    eng = AudioEngine()
+    eng.set_crossfade(0.1)
+    x = eng._xfade_frames
+    eng._write(_frames(2 * x, value=10000))
+    eng.mark_boundary()                    # boundary at 2x
+    eng._write(_frames(x // 2, value=-10000))  # only half a window of head
+
+    out = _drain(eng, 2 * x)               # drain everything readable
+    n_pure = int((out[:, 0] == 10000).sum())
+    assert x <= n_pure < 2 * x             # mix deferred past the naive window
+    mixed = out[n_pure:]
+    # the mix's first sample carries gain 0 (== pure tail), hence the ±1
+    assert abs(len(mixed) - x // 2) <= 1   # overlap shrank to available head
+    assert mixed[-1][0] < -8000            # and does reach the next track
+
+
+def test_set_crossfade_reserves_double_the_overlap() -> None:
     eng = AudioEngine()
     base = eng._fill_limit
     eng.set_crossfade(5.0)
-    assert eng._fill_limit >= 5 * eng.samplerate
+    assert eng._fill_limit >= 2 * 5 * eng.samplerate  # tail + head
     eng.set_crossfade(0.0)
     assert eng._fill_limit == base
+
+
+def test_crossed_ms_counts_audible_position_of_new_track() -> None:
+    sr = 44100
+    eng = AudioEngine(samplerate=sr)
+    eng.set_crossfade(0.1)
+    x = eng._xfade_frames
+    assert eng.crossed_ms is None          # no boundary yet
+    eng._write(_frames(2 * x, value=10))
+    eng.mark_boundary()
+    eng._write(_frames(2 * x, value=20))
+    _drain(eng, 2 * x - x)                 # up to the mix window
+    _drain(eng, x // 2)                    # halfway through the mix
+    assert abs(eng.crossed_ms - int(x // 2 * 1000 / sr)) <= 2
+    _drain(eng, x // 2)                    # finish the mix
+    _drain(eng, 1000)                      # 1000 frames into plain track 2
+    expected = int((x + 1000) * 1000 / sr)
+    assert abs(eng.crossed_ms - expected) <= 2
+    eng.flush()
+    assert eng.crossed_ms is None          # seek/skip resets the clock
 
 
 # -- hold / release (instant local pause) ----------------------------------------

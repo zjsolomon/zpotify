@@ -62,7 +62,7 @@ class AudioEngine:
         volume: float = 0.8,
         buffer_seconds: float = 0.3,
         prebuffer_seconds: float = 0.1,
-        capacity_seconds: float = 16.0,
+        capacity_seconds: float = 28.0,
     ) -> None:
         self.samplerate = samplerate
         self.channels = channels
@@ -89,6 +89,7 @@ class AudioEngine:
         self._boundaries: deque[int] = deque()   # absolute track-end positions
         self._mix_offset = 0   # head tap offset == total mix length (frames)
         self._mix_left = 0     # frames of mix remaining
+        self._last_boundary: int | None = None   # last boundary that started playing
 
         # Fade envelope: a 0..1 gain ramp stepped per callback block (~23 ms),
         # multiplied into the output after volume. Drives pause fades and the
@@ -252,18 +253,32 @@ class AudioEngine:
                     continue
                 limit = self._buffered
                 if self._xfade_frames > 0 and self._boundaries:
-                    dist = self._boundaries[0] - self._readpos
+                    boundary = self._boundaries[0]
+                    dist = boundary - self._readpos
                     if dist <= 0:
+                        # boundary reached without enough head to mix: the
+                        # next track starts plainly (hard transition)
                         self._boundaries.popleft()
+                        self._last_boundary = boundary
                         continue
                     if dist <= self._xfade_frames:
-                        # reached the overlap window: mix for `dist` frames
-                        # with the head tapped `dist` frames ahead
-                        self._boundaries.popleft()
-                        self._mix_offset = dist
-                        self._mix_left = dist
-                        continue
-                    limit = min(limit, dist - self._xfade_frames)
+                        head_avail = self._written - boundary
+                        if head_avail >= dist:
+                            # enough of the next track is buffered to sustain
+                            # the whole overlap: mix `dist` frames, head
+                            # tapped `dist` ahead
+                            self._boundaries.popleft()
+                            self._last_boundary = boundary
+                            self._mix_offset = dist
+                            self._mix_left = dist
+                            continue
+                        # head still buffering: keep playing the tail — the
+                        # window shrinks while the head grows, meeting at the
+                        # largest overlap the stream can sustain. Chunk only
+                        # up to the meet point so it's re-evaluated there.
+                        limit = min(limit, max(1, dist - head_avail))
+                    else:
+                        limit = min(limit, dist - self._xfade_frames)
                 m = min(want, limit)
                 if m <= 0:
                     break
@@ -283,15 +298,19 @@ class AudioEngine:
     # -- crossfade / boundaries -------------------------------------------
 
     def set_crossfade(self, seconds: float) -> None:
-        """Set the crossfade overlap; grows/shrinks the fill limit to match
-        (the overlap needs that much of the next track buffered ahead)."""
+        """Set the crossfade overlap; grows/shrinks the fill limit to match.
+
+        The limit is 2×overlap: at mix start the buffer must hold the whole
+        outgoing tail (X) *and* enough incoming head (X) to sustain the mix —
+        the head only arrives at 1× real time, so it can't catch up later.
+        """
         seconds = max(0.0, float(seconds))
         with self._cond:
             self._xfade_frames = int(seconds * self.samplerate)
             if self._xfade_frames > 0:
                 self._fill_limit = min(
                     self._capacity - self.blocksize * 4,
-                    self._xfade_frames + self._base_fill)
+                    2 * self._xfade_frames + self._base_fill)
             else:
                 self._fill_limit = self._base_fill
             self._cond.notify_all()
@@ -312,6 +331,21 @@ class AudioEngine:
         reports the track change several seconds before you can hear it."""
         with self._cond:
             return bool(self._boundaries)
+
+    @property
+    def crossed_ms(self) -> int | None:
+        """Audible milliseconds into the track that most recently crossed a
+        boundary — an exact stream-counted clock for the progress bar during
+        and after a crossfade. None when no boundary has played since the
+        last flush (seek/skip), where the latency estimate applies instead."""
+        with self._cond:
+            if self._mix_left > 0:
+                played = self._mix_offset - self._mix_left
+            elif self._last_boundary is not None:
+                played = self._readpos - self._last_boundary
+            else:
+                return None
+            return int(played * 1000 / self.samplerate)
 
     # -- envelope / pause ---------------------------------------------------
 
@@ -417,6 +451,7 @@ class AudioEngine:
             self._boundaries.clear()
             self._mix_offset = 0
             self._mix_left = 0
+            self._last_boundary = None
             self._tap[:] = 0.0
             self._cond.notify_all()
 
