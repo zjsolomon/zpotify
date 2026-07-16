@@ -5,7 +5,7 @@ from __future__ import annotations
 from zpotify.player.fft import waveform
 from zpotify.term.screen import Screen
 from zpotify.term.style import Style
-from zpotify.ui import theme
+from zpotify.ui import theme, wordmark
 from zpotify.ui.views.base import View
 
 EIGHTHS = " ▁▂▃▄▅▆▇█"
@@ -19,12 +19,19 @@ class NowPlayingView(View):
         track = state.track if state else None
         info_h = 4
         cy = y + 1
+        # 8-bit wordmark in the top-right corner (when there's room for it
+        # beside the track info)
+        text_w = w - 6
+        if w - 6 - wordmark.WIDTH - 4 > 20:
+            wordmark.render(screen, x + w - wordmark.WIDTH - 3, y + 1,
+                            body=theme.WHITE, accent=theme.GREEN, bg=theme.BG)
+            text_w = w - 6 - wordmark.WIDTH - 4
         if track is not None:
-            screen.put(x + 3, cy, track.name[:w - 6],
+            screen.put(x + 3, cy, track.name[:text_w],
                        Style(fg=theme.WHITE, bg=theme.BG, bold=True))
-            screen.put(x + 3, cy + 1, track.artist[:w - 6], theme.ACCENT)
+            screen.put(x + 3, cy + 1, track.artist[:text_w], theme.ACCENT)
             album = track.album + ("  [E]" if track.explicit else "")
-            screen.put(x + 3, cy + 2, album[:w - 6], theme.DIM)
+            screen.put(x + 3, cy + 2, album[:text_w], theme.DIM)
         else:
             screen.put(x + 3, cy, "nothing playing", theme.DIM)
             screen.put(x + 3, cy + 2,

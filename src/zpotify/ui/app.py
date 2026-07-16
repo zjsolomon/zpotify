@@ -63,6 +63,7 @@ class App:
         self.user_name = ""
         self.visualizer = config.visualizer  # spectrum | wave | off
         self.help_visible = False
+        self.quit_confirm = False  # "quit? y" popup is showing
         self.quit_requested = False
         self._status = ""
         self._status_until = 0.0
@@ -399,6 +400,12 @@ class App:
                     view.handle_key(self, Key(char=ch))
 
     def _handle_key(self, key: Key) -> None:
+        if self.quit_confirm:
+            # y confirms; any other key cancels (ctrl-c still quits outright)
+            self.quit_confirm = False
+            if key.char in ("y", "Y") or (key.ctrl and key.char == "c"):
+                self.quit_requested = True
+            return
         if self.help_visible:
             self.help_visible = False
             return
@@ -412,7 +419,7 @@ class App:
         char = key.char if not view.wants_text else ""
         name = key.name
         if char == "q":
-            self.quit_requested = True
+            self.quit_confirm = True
         elif name == "space":
             self.toggle_play()
         elif char == "n":
@@ -447,6 +454,9 @@ class App:
             view.handle_key(self, key)
 
     def _handle_mouse(self, mouse: Mouse) -> None:
+        if self.quit_confirm and mouse.kind == "press":
+            self.quit_confirm = False  # clicking anywhere cancels
+            return
         if self.help_visible and mouse.kind == "press":
             self.help_visible = False
             return
@@ -517,6 +527,8 @@ class App:
             self._render_help(cols, rows)
         if self._librespot_auth_url:
             self._render_librespot_auth(cols, rows)
+        if self.quit_confirm:
+            self._render_quit_confirm(cols, rows)
         screen.present()
 
     def _render_header(self, cols: int) -> None:
@@ -619,7 +631,7 @@ class App:
             ("v", "visualizer: spectrum / wave / off"),
             ("/", "search"), ("1-7", "switch view (7 = settings)"),
             ("j k / arrows", "navigate lists"), ("enter", "play selection"),
-            ("f", "save/unsave track (library)"), ("q", "quit"),
+            ("f", "save/unsave track (library)"), ("q", "quit (y confirms)"),
             ("", ""), ("mouse", "click rows, tabs, buttons; wheel scrolls;"),
             ("", "click the top progress bar to seek"),
         ]
@@ -632,6 +644,17 @@ class App:
         for i, (keys, desc) in enumerate(lines):
             self.screen.put(x + 3, y + 2 + i, f"{keys:>14}", theme.ACCENT_BOLD)
             self.screen.put(x + 19, y + 2 + i, desc, theme.BASE)
+
+    def _render_quit_confirm(self, cols: int, rows: int) -> None:
+        w, h = 40, 5
+        x = (cols - w) // 2
+        y = (rows - h) // 2
+        self.screen.fill(x, y, w, h, " ", theme.BASE)
+        self.screen.box(x, y, w, h, theme.ACCENT_BOLD, title=" quit? ")
+        self.screen.put(x + 3, y + 2, "press ", theme.BASE)
+        self.screen.put(x + 9, y + 2, "y", theme.ACCENT_BOLD)
+        self.screen.put(x + 10, y + 2, " to quit — any other key stays",
+                        theme.DIM)
 
     def _render_librespot_auth(self, cols: int, rows: int) -> None:
         url = self._librespot_auth_url or ""
