@@ -304,6 +304,15 @@ class AudioEngine:
             if self._xfade_frames > 0 and self._buffered > 0:
                 self._boundaries.append(self._written)
 
+    @property
+    def transition_pending(self) -> bool:
+        """True while a marked track boundary is still ahead of the audible
+        position (it clears the moment the crossfade begins). The UI uses
+        this to keep showing the outgoing track: with crossfade on, librespot
+        reports the track change several seconds before you can hear it."""
+        with self._cond:
+            return bool(self._boundaries)
+
     # -- envelope / pause ---------------------------------------------------
 
     def fade_to(self, target: float, seconds: float) -> None:

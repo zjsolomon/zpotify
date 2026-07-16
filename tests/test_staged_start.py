@@ -204,3 +204,44 @@ def test_play_tracks_filters_malformed_uris(app, monkeypatch) -> None:
     app.play_tracks(uris=["", None])
     assert not calls                     # nothing sent to Spotify
     assert "nothing playable" in notes[0]
+
+
+# -- crossfade-aware track display ------------------------------------------------
+
+def _mk_track(i: int) -> Track:
+    return Track(f"t{i}", f"spotify:track:{'z'*18}{i:04d}", f"S{i}", ("A",), "Al", 200000)
+
+def test_track_change_display_waits_for_audible_boundary(app) -> None:
+    a, b = _mk_track(1), _mk_track(2)
+    from zpotify.models import PlaybackState
+    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=1000, track=a),
+                        time.monotonic())
+    # librespot streamed ahead: boundary marked but not yet audible
+    app.audio.set_crossfade(2.0)
+    app.audio._boundaries.append(10_000)
+
+    late = PlaybackState(is_playing=True, progress_ms=5, track=b)
+    app._on_playback(late, None)
+    assert app.playback.track.id == a.id      # still showing the outgoing track
+    assert app._pending_playback is not None
+
+    app.audio._boundaries.clear()             # boundary reached the speakers
+    app._tick(time.monotonic())
+    assert app.playback.track.id == b.id      # now adopted
+    assert app._pending_playback is None
+
+
+def test_pending_track_discarded_after_user_action(app) -> None:
+    a, b = _mk_track(1), _mk_track(2)
+    from zpotify.models import PlaybackState
+    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=1000, track=a),
+                        time.monotonic())
+    app.audio.set_crossfade(2.0)
+    app.audio._boundaries.append(10_000)
+    app._on_playback(PlaybackState(is_playing=True, progress_ms=5, track=b), None)
+    assert app._pending_playback is not None
+    app._mark_action()                        # user skipped/sought meanwhile
+    app.audio._boundaries.clear()
+    app._tick(time.monotonic())
+    assert app._pending_playback is None
+    assert app.playback.track.id == a.id      # stale snapshot not adopted

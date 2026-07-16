@@ -110,6 +110,9 @@ class App:
         self.search_overlay: TextInput | None = None
         self._search_overlay_rect: tuple[int, int, int, int] | None = None
         self._player_restart_at: float | None = None  # debounced settings restart
+        # A poll that reported the *next* track while the crossfade boundary
+        # is still audibly ahead; adopted once the boundary plays.
+        self._pending_playback: tuple[PlaybackState, float] | None = None
         # Optimistic UI: local actions mutate playback state immediately; any
         # poll *requested before* the action is stale and must be discarded,
         # or the icon/progress would flicker back until the next poll.
@@ -610,6 +613,15 @@ class App:
             self._player_restart_at = None
             self.notify("restarting player…")
             self.workers.submit(self._restart_librespot, None)
+        # Adopt a held-back track change once its boundary is audible (the
+        # crossfade has begun), or after a failsafe timeout.
+        if self._pending_playback is not None:
+            result, seen_at = self._pending_playback
+            if seen_at < self._action_at:
+                self._pending_playback = None  # user acted since: stale
+            elif not self.audio.transition_pending or now - seen_at > 15.0:
+                self._pending_playback = None
+                self._adopt_playback(result, seen_at)
         # Self-heal: if Spotify says we're playing but our output is gated
         # (a pause/resume race), ramp it back up — silence must never be a
         # permanent state while playback is active. A held engine or an armed
@@ -637,9 +649,23 @@ class App:
                 self._stage_attempted = True
                 self.workers.submit(self._fetch_stage_candidate, self._on_stage)
             return
+        current = self.playback
+        if (result.is_playing and current is not None
+                and current.track is not None and result.track is not None
+                and result.track.id != current.track.id
+                and self.audio.transition_pending):
+            # With crossfade on, librespot streams ahead: Spotify reports the
+            # next track seconds before it's audible. Keep showing the
+            # outgoing track until the boundary reaches the speakers.
+            self._pending_playback = (result, time.monotonic())
+            return
+        self._pending_playback = None
+        self._adopt_playback(result, time.monotonic())
+
+    def _adopt_playback(self, result: PlaybackState, poll_at: float) -> None:
         self._staged = False
         self.playback = result
-        self._poll_at = time.monotonic()
+        self._poll_at = poll_at
         self._maybe_save_session()
         track_id = result.track.id if result.track else None
         if track_id != self._last_track_id:
