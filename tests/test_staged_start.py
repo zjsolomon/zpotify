@@ -124,3 +124,64 @@ def test_session_saved_only_for_our_device(app) -> None:
     assert saved["context_uri"] == "spotify:album:a1"
     assert saved["up_next"][0]["id"] == "t2"
     assert saved["saved_at"] > 0
+
+
+# -- radio fill for an empty staged queue -----------------------------------------
+
+RADIO = [Track(f"r{i}", f"spotify:track:r{i}", f"R{i}", ("A",), "Al", 1000)
+         for i in range(12)]
+
+
+def _stage_remote(app):
+    app._on_stage({"kind": "remote", "track": TRACK.to_dict(),
+                   "progress_ms": 0, "context_uri": None, "up_next": []}, None)
+
+
+def test_empty_staged_queue_requests_radio(app, monkeypatch) -> None:
+    submitted = []
+    monkeypatch.setattr(app.workers, "submit",
+                        lambda fn, cb=None: submitted.append((fn, cb)))
+    _stage_remote(app)
+    assert any(fn == app._fetch_radio for fn, _ in submitted)
+    app._on_radio(RADIO[:10], None)
+    assert len(app.up_next) == 10
+    assert app.up_next_is_radio
+
+
+def test_radio_failure_schedules_retry_then_gives_up(app) -> None:
+    _stage_remote(app)
+    for _ in range(2):
+        app._on_radio(None, RuntimeError("503"))
+        assert app._radio_retry_at is not None
+        app._radio_retry_at = None
+    app._on_radio(None, RuntimeError("503"))
+    assert app._radio_retry_at is None  # third strike: stop retrying
+
+
+def test_queue_poll_does_not_clobber_staged_radio(app) -> None:
+    _stage_remote(app)
+    app._on_radio(RADIO[:10], None)
+    app._on_queue([], None)  # dead session's queue is empty — must not wipe
+    assert len(app.up_next) == 10 and app.up_next_is_radio
+
+
+def test_enter_on_staged_radio_row_starts_chain_there(app, monkeypatch) -> None:
+    _stage_remote(app)
+    app._on_radio(RADIO[:10], None)
+    calls = {}
+    monkeypatch.setattr(app, "play_tracks", lambda **kw: calls.update(kw))
+    app.skip_to_queue_index(3)
+    assert calls["uris"][0] == RADIO[3].uri  # starts at the chosen row
+    assert len(calls["uris"]) == 7
+    assert not app._staged
+
+
+def test_fetch_radio_excludes_current_and_dedupes(app, monkeypatch) -> None:
+    _stage_remote(app)
+    class R:
+        tracks = [TRACK, RADIO[0], RADIO[0], *RADIO[1:12]]
+    monkeypatch.setattr(app.api, "search", lambda q, limit=20: R())
+    radio = app._fetch_radio()
+    assert TRACK.id not in [t.id for t in radio]
+    assert len(radio) == 10
+    assert len({t.id for t in radio}) == 10

@@ -79,6 +79,11 @@ class App:
         self._stage_attempted = False
         self._staged_session: dict | None = None
         self._session_saved_at = 0.0
+        # Radio fill for an empty staged queue (artist-search based — the
+        # real recommendations API is closed to personal apps).
+        self.up_next_is_radio = False
+        self._radio_tries = 0
+        self._radio_retry_at: float | None = None
         self.up_next: list[Track] = []   # queue preview for the now-playing view
         self._next_queue_poll = 0.0
         self._last_track_id: str | None = None
@@ -361,6 +366,14 @@ class App:
         """Play the queue item at ``index`` by skipping forward past the items
         before it — exactly what Spotify's own clients do, so the rest of the
         queue behaves identically (skipped items are consumed)."""
+        if self._staged:
+            # no live session to skip through: start one from that row
+            chain = [t.uri for t in self.up_next[index:index + 10] if t.uri]
+            if not chain:
+                return
+            self._staged = False
+            self.play_tracks(uris=chain)
+            return
         if index < len(self.up_next):
             self.notify(f"skipping to: {self.up_next[index].name}")
         skips = index + 1
@@ -549,6 +562,10 @@ class App:
         if self.device_id is not None and now >= self._next_queue_poll:
             self._next_queue_poll = now + 15.0
             self.workers.submit(self.api.queue, self._on_queue)
+        if (self._radio_retry_at is not None and now >= self._radio_retry_at
+                and self._staged and not self.up_next):
+            self._radio_retry_at = None
+            self.workers.submit(self._fetch_radio, self._on_radio)
         if self._player_restart_at is not None and now >= self._player_restart_at:
             self._player_restart_at = None
             self.notify("restarting player…")
@@ -621,10 +638,48 @@ class App:
                                       track=track,
                                       context_uri=result.get("context_uri"))
         self.up_next = [Track.from_dict(d) for d in result.get("up_next") or []]
+        self.up_next_is_radio = False
         self._staged = True
         self._staged_session = result
         self._poll_at = time.monotonic()
         self.notify(f"ready: {track.name} — space plays")
+        if not self.up_next:
+            # no saved queue: build a radio-style one so UP NEXT never sits
+            # empty; space chains it into the real session
+            self._radio_tries = 0
+            self.workers.submit(self._fetch_radio, self._on_radio)
+
+    def _fetch_radio(self) -> list[Track]:
+        """Worker: radio-ish list — the staged track's artist searched, other
+        popular tracks taken. (Spotify closed the recommendations endpoint to
+        personal apps, so this is the closest honest approximation.)"""
+        state = self.playback
+        if state is None or state.track is None:
+            return []
+        track = state.track
+        query = track.artists[0] if track.artists else track.name
+        results = self.api.search(query, limit=20)
+        seen = {track.id}
+        radio = []
+        for t in results.tracks:
+            if t.id in seen:
+                continue
+            seen.add(t.id)
+            radio.append(t)
+            if len(radio) >= 10:
+                break
+        return radio
+
+    def _on_radio(self, result, error) -> None:
+        if not self._staged or self.up_next:
+            return  # a real queue appeared meanwhile
+        if error is not None or not result:
+            self._radio_tries += 1
+            if self._radio_tries < 3:
+                self._radio_retry_at = time.monotonic() + 20.0
+            return
+        self.up_next = result
+        self.up_next_is_radio = True
 
     def _maybe_save_session(self) -> None:
         """Persist what zpotify itself is playing so a restart can restore it.
@@ -658,8 +713,11 @@ class App:
         self._next_queue_poll = 0.0
 
     def _on_queue(self, result, error) -> None:
+        if self._staged:
+            return  # don't clobber a staged/radio queue with the dead session's
         if error is None and isinstance(result, list):
             self.up_next = result
+            self.up_next_is_radio = False
 
     def _render(self) -> None:
         screen = self.screen

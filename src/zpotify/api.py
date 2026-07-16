@@ -55,7 +55,7 @@ class SpotifyAPI:
         body: dict[str, Any] | None = None,
         _retries_429: int = 0,
         _retried_401: bool = False,
-        _retried_5xx: bool = False,
+        _retried_5xx: int = 0,
     ) -> dict | None:
         url = f"{API_BASE}{path}"
         if params:
@@ -93,7 +93,7 @@ class SpotifyAPI:
         body: dict[str, Any] | None,
         retries_429: int,
         retried_401: bool,
-        retried_5xx: bool,
+        retried_5xx: int,
     ) -> dict | None:
         raw = exc.read()
         status = exc.code
@@ -115,10 +115,12 @@ class SpotifyAPI:
                 method, path, params, body, retries_429 + 1, retried_401, retried_5xx
             )
 
-        if 500 <= status < 600 and not retried_5xx:
-            time.sleep(1)
+        # Spotify's dev-mode API throws intermittent 5xx bursts; two retries
+        # with a short backoff ride most of them out.
+        if 500 <= status < 600 and retried_5xx < 2:
+            time.sleep(0.8 if retried_5xx == 0 else 2.0)
             return self._request(
-                method, path, params, body, retries_429, retried_401, True
+                method, path, params, body, retries_429, retried_401, retried_5xx + 1
             )
 
         message = _error_message(raw, exc.reason)
@@ -241,13 +243,18 @@ class SpotifyAPI:
             p for p in (parse_playlist(i) for i in data.get("playlists", {}).get("items", []) or []) if p
         ]
 
-        # page tracks up to `limit` (track-only requests from here on)
+        # Page tracks up to `limit`. Quirks: single-type searches sometimes
+        # get rejected outright (so keep two types and ignore the second),
+        # and the endpoint 5xxes in bursts (so partial results beat none).
         page = data.get("tracks", {})
         consumed = len(page.get("items", []) or [])  # raw items, incl. filtered
         while "track" in types and len(tracks) < limit and page.get("next"):
-            data = self._request("GET", "/search", params={
-                "q": q, "type": "track", "limit": self._SEARCH_PAGE,
-                "offset": offset + consumed}) or {}
+            try:
+                data = self._request("GET", "/search", params={
+                    "q": q, "type": "track,artist", "limit": self._SEARCH_PAGE,
+                    "offset": offset + consumed}) or {}
+            except ApiError:
+                break  # keep what we already have
             page = data.get("tracks", {})
             items = page.get("items", []) or []
             if not items:

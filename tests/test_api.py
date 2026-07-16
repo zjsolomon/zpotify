@@ -349,16 +349,16 @@ def test_429_gives_up_after_three_retries(monkeypatch):
     assert calls["n"] == 4  # first attempt + 3 retries
 
 
-# -- 5xx: one retry after 1s ------------------------------------------------------------
+# -- 5xx: two retries with backoff (Spotify 5xxes in bursts) ------------------------------
 
 
-def test_5xx_retries_once_after_sleep(monkeypatch):
+def test_5xx_retries_twice_with_backoff(monkeypatch):
     calls = {"n": 0}
     sleeps = []
 
     def fake_urlopen(req, *a, **kw):
         calls["n"] += 1
-        if calls["n"] == 1:
+        if calls["n"] <= 2:
             raise make_http_error(500, b'{"error":{"status":500,"message":"oops"}}')
         return FakeResponse(json.dumps({"ok": True}).encode())
 
@@ -368,11 +368,14 @@ def test_5xx_retries_once_after_sleep(monkeypatch):
     result = api._request("GET", "/me")
 
     assert result == {"ok": True}
-    assert sleeps == [1]
+    assert sleeps == [0.8, 2.0]
 
 
-def test_5xx_gives_up_after_one_retry(monkeypatch):
+def test_5xx_gives_up_after_two_retries(monkeypatch):
+    calls = {"n": 0}
+
     def fake_urlopen(req, *a, **kw):
+        calls["n"] += 1
         raise make_http_error(503, b'{"error":{"status":503,"message":"down"}}')
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -380,6 +383,7 @@ def test_5xx_gives_up_after_one_retry(monkeypatch):
     api = SpotifyAPI(DummyAuth())
     with pytest.raises(ApiError):
         api._request("GET", "/me")
+    assert calls["n"] == 3  # initial + two retries
 
 
 # -- pagination: stops on next=None, respects caps ----------------------------------------

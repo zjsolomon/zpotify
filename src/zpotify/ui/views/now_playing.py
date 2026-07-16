@@ -96,7 +96,9 @@ class NowPlayingView(View):
         screen.fill(bx - 1, by, box_w + 1, box_h, " ", theme.BASE)
         screen.box(bx, by, box_w, box_h,
                    theme.DIM if self.selected is not None else theme.FAINT)
-        screen.put(bx + 2, by, " UP NEXT ", theme.DIM.with_(bold=True))
+        title = " UP NEXT · RADIO " if getattr(app, "up_next_is_radio", False) \
+            else " UP NEXT "
+        screen.put(bx + 2, by, title, theme.DIM.with_(bold=True))
         inner_w = box_w - 4
         for i, t in enumerate(tracks[:rows]):
             selected = i == self.selected
