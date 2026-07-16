@@ -14,6 +14,31 @@ EIGHTHS = " ▁▂▃▄▅▆▇█"
 class NowPlayingView(View):
     name = "now playing"
 
+    def __init__(self) -> None:
+        self.selected: int | None = None  # highlighted row in UP NEXT
+
+    def handle_key(self, app, key) -> bool:
+        count = len(app.up_next[:10])
+        if count == 0:
+            self.selected = None
+            return False
+        if key.name == "down" or key.char == "j":
+            self.selected = 0 if self.selected is None \
+                else min(self.selected + 1, count - 1)
+            return True
+        if key.name == "up" or key.char == "k":
+            if self.selected is not None:
+                self.selected = None if self.selected == 0 else self.selected - 1
+            return True
+        if key.name == "esc" and self.selected is not None:
+            self.selected = None
+            return True
+        if key.name == "enter" and self.selected is not None:
+            app.skip_to_queue_index(self.selected)
+            self.selected = None
+            return True
+        return False
+
     def render(self, app, screen: Screen, x: int, y: int, w: int, h: int) -> None:
         state = app.playback
         track = state.track if state else None
@@ -49,25 +74,48 @@ class NowPlayingView(View):
         self._render_up_next(app, screen, x + 2, viz_y, w - 4, viz_h)
 
     def _render_up_next(self, app, screen: Screen, x: int, y: int, w: int, h: int) -> None:
-        """Boxed queue preview in the bottom-right of the visualizer area."""
+        """Boxed queue preview in the bottom-right of the visualizer area.
+
+        Arrow keys highlight a row; enter skips forward to it (Spotify
+        semantics: everything before it in the queue is consumed).
+        """
         tracks = app.up_next[:10]
         if not tracks or w < 46 or h < 6:
+            self.selected = None
             return
         box_w = min(48, w // 2)
         rows = min(len(tracks), h - 3)
         box_h = rows + 2  # border top (with title) + rows + border bottom
         bx = x + w - box_w
         by = y + h - box_h
+        if self.selected is not None and self.selected >= rows:
+            self.selected = rows - 1
         # solid backdrop so visualizer bars don't bleed through
         screen.fill(bx - 1, by, box_w + 1, box_h, " ", theme.BASE)
-        screen.box(bx, by, box_w, box_h, theme.FAINT)
+        screen.box(bx, by, box_w, box_h,
+                   theme.DIM if self.selected is not None else theme.FAINT)
         screen.put(bx + 2, by, " UP NEXT ", theme.DIM.with_(bold=True))
+        inner_w = box_w - 4
         for i, t in enumerate(tracks[:rows]):
+            selected = i == self.selected
+            row_style = theme.ROW_SELECTED if selected else theme.ROW_DIM
+            num_style = theme.ROW_SELECTED if selected else theme.FAINT
             number = f"{i + 1:>2} "
-            screen.put(bx + 2, by + 1 + i, number, theme.FAINT)
-            line = f"{t.name} — {t.artist}"
-            screen.put(bx + 2 + len(number), by + 1 + i,
-                       line[:box_w - 5 - len(number)], theme.ROW_DIM)
+            text = (number + f"{t.name} — {t.artist}")[:inner_w].ljust(inner_w)
+            screen.put(bx + 2, by + 1 + i, text[:len(number)], num_style)
+            screen.put(bx + 2 + len(number), by + 1 + i, text[len(number):], row_style)
+
+            def click(mouse, index=i):
+                if mouse.kind == "press":
+                    if self.selected == index:
+                        app.skip_to_queue_index(index)
+                        self.selected = None
+                    else:
+                        self.selected = index
+            app.add_hit(bx + 1, by + 1 + i, box_w - 2, 1, click)
+        hint = " ↑↓ + enter plays "
+        if self.selected is not None and box_w > len(hint) + 4:
+            screen.put(bx + box_w - len(hint) - 2, by + box_h - 1, hint, theme.FAINT)
 
     # bars: one column of width 2 per bin, height in cell-eighths
     def _render_spectrum(self, app, screen: Screen, x: int, y: int, w: int, h: int) -> None:
@@ -109,6 +157,3 @@ class NowPlayingView(View):
                 char = "█" if dy < span - 1 else "▊"
                 screen.put(x + i, mid - dy, char, style)
                 screen.put(x + i, min(mid + dy, y + h - 1), char, style)
-
-    def handle_key(self, app, key) -> bool:
-        return False

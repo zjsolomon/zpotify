@@ -89,7 +89,7 @@ Switch with keys `1`–`7` or click the tabs.
 
 | # | View | What it does |
 |---|---|---|
-| 1 | **now playing** | Big track info + the audio visualizer. |
+| 1 | **now playing** | Big track info + the audio visualizer, with an **UP NEXT** box showing the next 10 queue tracks. `↑`/`↓` (or `j`/`k`) highlight a queued song, `enter` (or double-click) jumps to it — Spotify queue semantics: the songs before it are skipped/consumed. `esc` clears the highlight. |
 | 2 | **search** | Type a query, `enter` to search; `enter` plays a result, `a` queues it. |
 | 3 | **playlists** | Your playlists; `enter` opens one, `enter` on a track plays it *in playlist context* (so next/shuffle work within the playlist), `esc` goes back. |
 | 4 | **library** | Your liked songs; `enter` plays, `a` queues, `f` removes from library. |

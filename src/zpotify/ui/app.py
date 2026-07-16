@@ -308,6 +308,25 @@ class App:
         self.call_api(self.api.next_track, describe="next",
                       then=lambda _: self.audio.flush())
 
+    def skip_to_queue_index(self, index: int) -> None:
+        """Play the queue item at ``index`` by skipping forward past the items
+        before it — exactly what Spotify's own clients do, so the rest of the
+        queue behaves identically (skipped items are consumed)."""
+        if index < len(self.up_next):
+            self.notify(f"skipping to: {self.up_next[index].name}")
+        skips = index + 1
+
+        def do_skips():
+            for i in range(skips):
+                self.api.next_track()
+                if i < skips - 1:
+                    time.sleep(0.25)  # let Spotify register each skip
+
+        self._optimistic_track_change()
+        self.call_api(do_skips, describe="skip",
+                      then=lambda _: (self.audio.flush(),
+                                      self.refresh_queue_soon()))
+
     def previous_track(self) -> None:
         self._optimistic_track_change()
         self.call_api(self.api.previous_track, describe="previous",
@@ -648,6 +667,7 @@ class App:
             ("v", "visualizer: spectrum / wave / off"),
             ("/", "search"), ("1-7", "switch view (7 = settings)"),
             ("j k / arrows", "navigate lists"), ("enter", "play selection"),
+            ("↑ ↓ + enter", "pick a song from UP NEXT (now playing)"),
             ("f", "save/unsave track (library)"), ("q", "quit (y confirms)"),
             ("", ""), ("mouse", "click rows, tabs, buttons; wheel scrolls;"),
             ("", "click the top progress bar to seek"),
