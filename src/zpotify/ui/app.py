@@ -57,6 +57,11 @@ class App:
         self.view_index = 0
 
         self.playback: PlaybackState | None = None
+        # "Staged" start: nothing was playing anywhere, so the most recently
+        # played track (any device — e.g. the phone) is shown paused, ready
+        # for space to start it.
+        self._staged = False
+        self._stage_attempted = False
         self.up_next: list[Track] = []   # queue preview for the now-playing view
         self._next_queue_poll = 0.0
         self._last_track_id: str | None = None
@@ -273,6 +278,14 @@ class App:
 
     def toggle_play(self) -> None:
         state = self.playback
+        if self._staged and state is not None and state.track is not None:
+            # staged track: there is no Spotify session to resume — start one
+            if self.device_id is None:
+                self.notify("player device not ready yet", error=True)
+                return
+            self._staged = False
+            self.play_tracks(uris=[state.track.uri])
+            return
         if state is not None and state.is_playing:
             if self.config.pause_fade:
                 self.audio.fade_to(0.0, 0.12)  # masks Connect latency, no click
@@ -535,12 +548,33 @@ class App:
             return
         if requested_at < self._action_at:
             return  # snapshot predates a local optimistic action: stale
+        if result is None:
+            if self._staged:
+                return  # keep the staged track on screen
+            self.playback = None
+            self._poll_at = time.monotonic()
+            if not self._stage_attempted and self.device_id is not None:
+                self._stage_attempted = True
+                self.workers.submit(lambda: self.api.recently_played(limit=1),
+                                    self._on_recent)
+            return
+        self._staged = False
         self.playback = result
         self._poll_at = time.monotonic()
-        track_id = result.track.id if result and result.track else None
+        track_id = result.track.id if result.track else None
         if track_id != self._last_track_id:
             self._last_track_id = track_id
             self.refresh_queue_soon()
+
+    def _on_recent(self, result, error) -> None:
+        """Stage the last-played track (from any device) as ready-to-play."""
+        if error is not None or not result or self.playback is not None:
+            return
+        track = result[0]
+        self.playback = PlaybackState(is_playing=False, progress_ms=0, track=track)
+        self._staged = True
+        self._poll_at = time.monotonic()
+        self.notify(f"ready: {track.name} — space plays")
 
     def refresh_queue_soon(self) -> None:
         self._next_queue_poll = 0.0
