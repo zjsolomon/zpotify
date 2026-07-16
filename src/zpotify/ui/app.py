@@ -232,9 +232,12 @@ class App:
         """Raise the fade envelope for newly starting audio."""
         self._fade_out_started = False
         if track_change and self.config.fade_seconds > 0:
-            self.audio.set_env(0.0)
-            self.audio.fade_to(1.0, self.config.fade_seconds)
+            # Anchor the fade-in to the moment the NEW track's audio reaches
+            # the speakers (engine prime transition) — mutating the envelope
+            # now would audibly duck/raise the OLD track's still-draining tail.
+            self.audio.arm_boundary_fade(self.config.fade_seconds)
         else:
+            self.audio.disarm_boundary_fade()
             self.audio.fade_to(1.0, 0.15 if self.config.pause_fade else 0.0)
 
     def _restart_librespot(self) -> None:
@@ -373,31 +376,15 @@ class App:
                       then=lambda _: self.audio.flush())
 
     def skip_to_queue_index(self, index: int) -> None:
-        """Play the queue item at ``index`` by skipping forward past the items
-        before it — exactly what Spotify's own clients do, so the rest of the
-        queue behaves identically (skipped items are consumed)."""
-        if self._staged:
-            # no live session to skip through: start one from that row
-            chain = [t.uri for t in self.up_next[index:index + 10] if t.uri]
-            if not chain:
-                return
-            self._staged = False
-            self.play_tracks(uris=chain)
+        """Play the UP NEXT row at ``index`` directly — same behavior as
+        pressing enter on a search result. The rest of the visible list is
+        chained behind it so listening continues down what was shown."""
+        chain = [t.uri for t in self.up_next[index:index + 10] if t.uri]
+        if not chain:
             return
-        if index < len(self.up_next):
-            self.notify(f"skipping to: {self.up_next[index].name}")
-        skips = index + 1
-
-        def do_skips():
-            for i in range(skips):
-                self.api.next_track()
-                if i < skips - 1:
-                    time.sleep(0.25)  # let Spotify register each skip
-
-        self._optimistic_track_change()
-        self.call_api(do_skips, describe="skip",
-                      then=lambda _: (self.audio.flush(),
-                                      self.refresh_queue_soon()))
+        self._staged = False
+        self.notify(f"playing: {self.up_next[index].name}")
+        self.play_tracks(uris=chain)
 
     def previous_track(self) -> None:
         self._optimistic_track_change()
@@ -583,10 +570,12 @@ class App:
         self._drive_track_fade()
         # Self-heal: if Spotify says we're playing but the fade envelope is
         # parked at 0 (a pause/resume race), ramp it back up — silence must
-        # never be a permanent state while playback is active.
+        # never be a permanent state while playback is active. An armed
+        # boundary fade is intentional silence-until-the-new-track: leave it.
         state = self.playback
         if state is not None and state.is_playing and not self._fade_out_started \
-                and self.audio.env_target == 0.0:
+                and self.audio.env_target == 0.0 \
+                and not self.audio.boundary_fade_armed:
             self.audio.fade_to(1.0, 0.15)
 
     def _drive_track_fade(self) -> None:
@@ -599,7 +588,9 @@ class App:
         if state.is_playing and not self._fade_out_started \
                 and 0 < remaining <= fade * 1000:
             self._fade_out_started = True
-            self.audio.fade_to(0.0, remaining / 1000)
+            # `remaining` is server-clock; the audio we hear lags by the ring
+            # + pipe latency, so stretch the ramp to land at the audible end.
+            self.audio.fade_to(0.0, remaining / 1000 + self.audio.latency)
         elif self._fade_out_started and self.progress_ms() < 5000:
             # new/repeated track began without a librespot Loading event
             self._begin_fade_in(track_change=True)

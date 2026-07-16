@@ -76,6 +76,11 @@ class AudioEngine:
         self._env = 1.0
         self._env_target = 1.0
         self._env_rate = 0.0  # per-frame delta
+        # A boundary fade waits for the *next* unprimed->primed transition —
+        # the moment a new track's audio actually reaches the speakers, after
+        # the natural inter-track underrun (gapless is disabled) — then ramps
+        # 0 -> 1. Anchors fade-ins to the audio, not the earlier API events.
+        self._boundary_fade_seconds: float | None = None
 
         # Visualizer tap: mono float of the most recently *played* frames.
         self._tap_len = 8192
@@ -201,6 +206,28 @@ class AudioEngine:
             else:
                 self._env_rate = (target - self._env) / (seconds * self.samplerate)
 
+    def arm_boundary_fade(self, seconds: float) -> None:
+        """Fade in from silence when the next track's audio starts playing
+        (the next unprimed->primed transition in the callback)."""
+        with self._cond:
+            self._boundary_fade_seconds = max(0.05, seconds)
+
+    def disarm_boundary_fade(self) -> None:
+        with self._cond:
+            self._boundary_fade_seconds = None
+
+    @property
+    def boundary_fade_armed(self) -> bool:
+        return self._boundary_fade_seconds is not None
+
+    @property
+    def latency(self) -> float:
+        """Estimated seconds between librespot's write position and the
+        speakers: our ring buffer content plus the OS pipe (~64 KiB)."""
+        with self._cond:
+            buffered = self._buffered
+        return buffered / self.samplerate + 0.37
+
     def set_env(self, value: float) -> None:
         """Set the envelope instantly (e.g. to 0 before a track fade-in)."""
         with self._cond:
@@ -293,6 +320,13 @@ class AudioEngine:
                 if not self._primed:
                     if self._buffered >= self._prime_frames:
                         self._primed = True
+                        if self._boundary_fade_seconds is not None:
+                            # new track's audio is about to play: fade it in
+                            seconds = self._boundary_fade_seconds
+                            self._boundary_fade_seconds = None
+                            self._env = 0.0
+                            self._env_target = 1.0
+                            self._env_rate = 1.0 / (seconds * self.samplerate)
                     else:
                         outdata[:] = 0
                         self._level += (0.0 - self._level) * 0.3  # decay while gated

@@ -202,3 +202,44 @@ def test_set_env_is_instant_and_flush_keeps_env() -> None:
     assert eng.env == 0.0
     eng.fade_to(1.0, 0.0)  # zero seconds -> instant
     assert eng.env == 1.0
+
+
+def test_boundary_fade_fires_on_prime_transition() -> None:
+    eng = AudioEngine(blocksize=441)
+    out = np.empty((441, 2), dtype=np.int16)
+    eng.arm_boundary_fade(0.1)  # 10 blocks to full volume
+    assert eng.boundary_fade_armed
+
+    # below the prime threshold: gated silence, fade still armed, env untouched
+    eng._write(_frames(128, value=10000))
+    eng._callback(out, 441, None, None)
+    assert np.all(out == 0) and eng.boundary_fade_armed and eng.env == 1.0
+
+    # prime: fade consumes, output ramps from silence
+    eng._write(_frames(eng._capacity - 128, value=10000))
+    eng._callback(out, 441, None, None)
+    assert not eng.boundary_fade_armed
+    first = abs(int(out[-1][0]))
+    assert first < 2000  # started near silence
+    for _ in range(12):
+        eng._callback(out, 441, None, None)
+    assert np.all(out == 8007)  # fully faded in (volume 0.8)
+    assert eng.env == 1.0
+
+
+def test_disarm_boundary_fade() -> None:
+    eng = AudioEngine(blocksize=64)
+    eng.arm_boundary_fade(1.0)
+    eng.disarm_boundary_fade()
+    out = np.empty((64, 2), dtype=np.int16)
+    eng._write(_frames(eng._prime_frames + 64, value=10000))
+    eng._callback(out, 64, None, None)
+    assert np.all(out == 8007)  # no fade: full volume immediately
+
+
+def test_latency_reflects_buffered_frames() -> None:
+    eng = AudioEngine()
+    base = eng.latency
+    assert abs(base - 0.37) < 1e-6  # empty ring: just the pipe estimate
+    eng._write(_frames(44100 // 10))  # +0.1s
+    assert abs(eng.latency - (0.47)) < 0.005

@@ -57,3 +57,29 @@ def test_no_queue_means_keys_pass_through() -> None:
     assert not view.handle_key(app, Key(name="down"))
     assert not view.handle_key(app, Key(name="enter"))
     assert app.skipped_to is None
+
+
+def test_enter_plays_chain_from_selected_row_live() -> None:
+    """Enter behaves like search: play the row directly, rest chained after."""
+    from zpotify.models import Track as T
+
+    class ChainApp(StubApp):
+        def __init__(self, n):
+            super().__init__(n)
+            self.chained = None
+            self._staged = True  # must be cleared regardless of mode
+
+        def skip_to_queue_index(self, index):  # not used here
+            raise AssertionError
+
+    # exercise the real App method against a stub carrier
+    from zpotify.ui.app import App
+    app = ChainApp(6)
+    app.up_next = [T(f"t{i}", f"spotify:track:{'x'*18}{i:04d}", f"S{i}", ("A",), "Al", 1)
+                   for i in range(6)]
+    calls = {}
+    app.play_tracks = lambda **kw: calls.update(kw)
+    app.notify = lambda *a, **k: None
+    App.skip_to_queue_index(app, 3)
+    assert calls["uris"] == [t.uri for t in app.up_next[3:]]
+    assert app._staged is False
