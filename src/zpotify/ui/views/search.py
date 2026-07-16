@@ -16,7 +16,7 @@ class SearchView(View):
 
     def __init__(self) -> None:
         self.query = TextInput()
-        self.focused = True
+        self.focused = False
         self.results: SearchResults | None = None
         self.tracks = common.make_track_list()
         self.searching = False
@@ -40,12 +40,15 @@ class SearchView(View):
                 self.focused = False
                 return True
             return self.query.handle_key(key)
-        if key.char == "/" or key.name == "tab":
+        if key.name == "tab":
             self.focused = True
             return True
         if common.list_nav(self.tracks, key):
             return True
         if key.name == "enter":
+            if not self.tracks.rows:
+                self.focused = True
+                return True
             self._play_selected(app)
             return True
         if key.char == "a":
@@ -98,9 +101,14 @@ class SearchView(View):
                           self.focused)
         app.add_hit(input_x, y + 1, input_w, 1,
                     lambda m: m.kind == "press" and self.focus_input())
-        status = "searching…" if self.searching else \
-            (f"{len(self.tracks.rows)} tracks — enter plays, a queues"
-             if self.results else "type a query, enter to search")
+        if self.searching:
+            status = "searching…"
+        elif self.results:
+            status = f"{len(self.tracks.rows)} tracks — enter plays, a queues"
+        elif not self.focused:
+            status = "enter to type a query"
+        else:
+            status = "type a query, enter to search"
         screen.put(x + 2, y + 2, status, theme.FAINT)
 
         list_y = y + 4

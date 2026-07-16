@@ -22,7 +22,7 @@ from zpotify.player.librespot import Librespot, LibrespotEvent
 from zpotify.term.events import Key, Mouse, Paste, Resize
 from zpotify.term.screen import Screen
 from zpotify.term.input import InputReader
-from zpotify.term.widgets import ProgressBar, tabs
+from zpotify.term.widgets import ProgressBar, TextInput, tabs
 from zpotify.ui import theme
 from zpotify.ui.workers import WorkerPool
 
@@ -100,6 +100,8 @@ class App:
         self._status_error = False
         self._hits: list[tuple[int, int, int, int, HitHandler]] = []
         self._librespot_auth_url: str | None = None
+        self.search_overlay: TextInput | None = None
+        self._search_overlay_rect: tuple[int, int, int, int] | None = None
         self._fade_out_started = False
         self._player_restart_at: float | None = None  # debounced settings restart
         # Optimistic UI: local actions mutate playback state immediately; any
@@ -475,6 +477,10 @@ class App:
         elif isinstance(event, Mouse):
             self._handle_mouse(event)
         elif isinstance(event, Paste):
+            if self.search_overlay is not None:
+                for ch in event.text:
+                    self.search_overlay.handle_key(Key(char=ch))
+                return
             view = self.views[self.view_index]
             if view.wants_text:
                 for ch in event.text:
@@ -486,6 +492,9 @@ class App:
             self.quit_confirm = False
             if key.char in ("y", "Y") or (key.ctrl and key.char == "c"):
                 self.quit_requested = True
+            return
+        if self.search_overlay is not None:
+            self._handle_search_overlay_key(key)
             return
         if self.help_visible:
             self.help_visible = False
@@ -524,19 +533,49 @@ class App:
         elif char == "?":
             self.help_visible = True
         elif char == "/":
-            self.switch_view(1)
-            from zpotify.ui.views.search import SearchView
-            view = self.views[1]
-            assert isinstance(view, SearchView)
-            view.focus_input()
+            self.search_overlay = TextInput()
+        elif char == "h":
+            self.switch_view((self.view_index - 1) % len(self.views))
+        elif char == "l":
+            self.switch_view((self.view_index + 1) % len(self.views))
         elif char and char in "1234567":
             self.switch_view(int(char) - 1)
         elif not view.wants_text:
             view.handle_key(self, key)
 
+    def _handle_search_overlay_key(self, key: Key) -> None:
+        overlay = self.search_overlay
+        if overlay is None:
+            return
+        if key.char == "/" or key.name == "esc":
+            self.search_overlay = None
+            return
+        if key.name == "enter":
+            text = overlay.value
+            self.search_overlay = None
+            if text.strip():
+                from zpotify.ui.views.search import SearchView
+                view = self.views[1]
+                assert isinstance(view, SearchView)
+                view.query.value = text
+                view.query.cursor = len(text)
+                view._search(self)
+                view.focused = False
+                self.switch_view(1)
+            return
+        overlay.handle_key(key)
+
     def _handle_mouse(self, mouse: Mouse) -> None:
         if self.quit_confirm and mouse.kind == "press":
             self.quit_confirm = False  # clicking anywhere cancels
+            return
+        if self.search_overlay is not None:
+            if mouse.kind == "press":
+                rect = self._search_overlay_rect
+                inside = (rect is not None and rect[0] <= mouse.x < rect[0] + rect[2]
+                         and rect[1] <= mouse.y < rect[1] + rect[3])
+                if not inside:
+                    self.search_overlay = None
             return
         if self.help_visible and mouse.kind == "press":
             self.help_visible = False
@@ -734,6 +773,8 @@ class App:
             self._render_help(cols, rows)
         if self._librespot_auth_url:
             self._render_librespot_auth(cols, rows)
+        if self.search_overlay is not None:
+            self._render_search_overlay(cols, rows)
         if self.quit_confirm:
             self._render_quit_confirm(cols, rows)
         screen.present()
@@ -836,7 +877,9 @@ class App:
             (", / .", "seek -10s / +10s"), ("+ / -", "volume"),
             ("s", "toggle shuffle"), ("r", "cycle repeat"),
             ("v", "visualizer: spectrum / wave / off"),
-            ("/", "search"), ("1-7", "switch view (7 = settings)"),
+            ("/", "search from anywhere (floating box)"),
+            ("1-7", "switch view (7 = settings)"),
+            ("h / l", "previous / next tab"),
             ("j k / arrows", "navigate lists"), ("enter", "play selection"),
             ("↑ ↓ + enter", "pick a song from UP NEXT (now playing)"),
             ("f", "save/unsave track (library)"), ("q", "quit (y confirms)"),
@@ -863,6 +906,21 @@ class App:
         self.screen.put(x + 9, y + 2, "y", theme.ACCENT_BOLD)
         self.screen.put(x + 10, y + 2, " to quit — any other key stays",
                         theme.DIM)
+
+    def _render_search_overlay(self, cols: int, rows: int) -> None:
+        overlay = self.search_overlay
+        if overlay is None:
+            return
+        w = min(60, cols - 8)
+        h = 5
+        x = (cols - w) // 2
+        y = (rows - h) // 2
+        self._search_overlay_rect = (x, y, w, h)
+        self.screen.fill(x, y, w, h, " ", theme.BASE)
+        self.screen.box(x, y, w, h, theme.ACCENT, title=" search ")
+        overlay.render(self.screen, x + 2, y + 2, w - 4, theme.INPUT_FOCUS, True)
+        hint = "enter searches · / or esc closes"
+        self.screen.put(x + 2, y + 3, hint[:w - 4], theme.FAINT)
 
     def _render_librespot_auth(self, cols: int, rows: int) -> None:
         url = self._librespot_auth_url or ""

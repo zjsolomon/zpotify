@@ -96,8 +96,8 @@ Switch with keys `1`–`7` or click the tabs.
 
 | # | View | What it does |
 |---|---|---|
-| 1 | **now playing** | Big track info + the audio visualizer, with an **UP NEXT** box showing the next 10 queue tracks. `↑`/`↓` (or `j`/`k`) highlight a queued song, `enter` (or double-click) jumps to it — Spotify queue semantics: the songs before it are skipped/consumed. `esc` clears the highlight. |
-| 2 | **search** | Type a query, `enter` to search; `enter` plays a result, `a` queues it. |
+| 1 | **now playing** | Big track info + the audio visualizer, with an **UP NEXT** box showing the next 10 queue tracks. `↑`/`↓` (or `j`/`k`) highlight a song, `enter` (or double-click) plays it directly — like picking a search result — with the rest of the list chained after it. `esc` clears the highlight. |
+| 2 | **search** | Type a query, `enter` to search; `enter` plays a result, `a` queues it. The input isn't auto-focused — with no results, `enter` engages it (or press `/` from anywhere for the floating search box). |
 | 3 | **playlists** | Your playlists; `enter` opens one, `enter` on a track plays it *in playlist context* (so next/shuffle work within the playlist), `esc` goes back. |
 | 4 | **library** | Your liked songs; `enter` plays, `a` queues, `f` removes from library. |
 | 5 | **queue** | What's coming up next (`R` refreshes). |
@@ -122,7 +122,8 @@ Switch with keys `1`–`7` or click the tabs.
 | Key | Action |
 |---|---|
 | `1`–`7` | switch view (7 = settings) |
-| `/` | jump to search and focus the input |
+| `h` / `l` | previous / next tab |
+| `/` | open a floating search box from anywhere; `enter` searches and jumps to the search view, `/` or `esc` dismisses |
 | `j` / `k` or arrows | move through lists |
 | `pgup` / `pgdn`, `home` / `end` | page / jump in lists |
 | `enter` | play / open selection |

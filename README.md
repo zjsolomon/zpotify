@@ -63,10 +63,11 @@ Inside the repo, `uv run zpotify` works too.)
 ## Keys
 
 `space` play/pause · `n`/`b` next/prev · `,`/`.` seek ±10s · `+`/`-` volume ·
-`/` search · `1-7` views (7 = settings) · `j`/`k` navigate · `enter` play · `a` queue ·
-`s` shuffle · `r` repeat · `v` visualizer · `?` help · `q` quit — plus full
-mouse support (click rows/tabs/buttons, scroll wheel, click the progress bar
-to seek).
+`/` floating search from anywhere (`enter` searches, `/` or `esc` closes) ·
+`1-7` views (7 = settings) · `h`/`l` previous/next tab · `j`/`k` navigate ·
+`enter` play · `a` queue · `s` shuffle · `r` repeat · `v` visualizer · `?` help ·
+`q` quit — plus full mouse support (click rows/tabs/buttons, scroll wheel,
+click the progress bar to seek).
 
 ## Project layout
 
@@ -76,8 +77,8 @@ src/zpotify/
   auth.py     OAuth 2.0 PKCE against accounts.spotify.com (stdlib only)
   api.py      Spotify Web API client (urllib), models in models.py
   player/     librespot subprocess, PCM ring buffer → sounddevice, FFT analysis
-  ui/         event loop, six views, player bar, theming
-tests/        89 unit tests: input decoding, rendering, API parsing, audio, FFT
+  ui/         event loop, seven views, player bar, overlays, theming
+tests/        140+ unit tests: input decoding, rendering, API parsing, audio, FFT
 ```
 
 ## Development
