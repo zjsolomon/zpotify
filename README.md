@@ -1,4 +1,4 @@
-<img src="Assets/banner.png" alt="zpotify" width="640">
+<img src="https://raw.githubusercontent.com/zjsolomon/zpotify/main/Assets/banner.png" alt="zpotify" width="640">
 
 Spotify, entirely in your terminal. The official Spotify app never opens.
 
@@ -40,11 +40,11 @@ the visualizer. Everything you see and interact with is this codebase.
 
 ## Install & run
 
-Install once as a global command (the standard `uv tool`/pipx way — an
-isolated venv plus a `zpotify` shim in `~/.local/bin`):
+Install once as a global command (an isolated venv plus a `zpotify` shim in
+`~/.local/bin`):
 
 ```sh
-uv tool install --editable /path/to/zpotify
+uv tool install zpotify    # or: pipx install zpotify
 ```
 
 Then from anywhere:
@@ -55,8 +55,11 @@ zpotify doctor   # health check when something's off
 zpotify auth     # redo the Spotify login
 ```
 
-(`--editable` links `src/`, so code changes apply without reinstalling.
-Inside the repo, `uv run zpotify` works too.)
+Or try it without installing: `uvx zpotify`.
+
+**From source / development:** `uv tool install --editable /path/to/zpotify`
+(`--editable` links `src/`, so code changes apply without reinstalling; inside
+the repo, `uv run zpotify` works too).
 
 **→ Full setup walkthrough, key reference, and troubleshooting: [docs/USER_GUIDE.md](docs/USER_GUIDE.md)**
 
