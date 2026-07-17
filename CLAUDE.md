@@ -55,6 +55,15 @@ Release steps:
 3. CI publishes. Verify with `uvx --no-cache zpotify@X.Y.Z doctor` and the
    PyPI page (index propagation can lag a minute or two).
 
-Manual fallback: `uv build && uv publish --token <project-scoped token>`.
-Never commit tokens; nothing under `~/.config/zpotify/` (OAuth tokens,
+The PyPI side is configured at
+https://pypi.org/manage/project/zpotify/settings/publishing/ — a GitHub
+trusted publisher with exactly: owner `zjsolomon`, repository `zpotify`,
+workflow `release.yml`, environment `pypi`. If a tagged release fails CI
+with an OIDC/publishing error, check that config first (these four values
+must match the workflow, none of them are secret).
+
+No PyPI tokens exist for this project by policy. Manual fallback if CI is
+ever unavailable: mint a fresh project-scoped token on PyPI, run
+`uv build && uv publish --token …`, then revoke the token. Tokens must never
+be committed or stored; nothing under `~/.config/zpotify/` (OAuth tokens,
 librespot credentials) may ever enter this public repo.
