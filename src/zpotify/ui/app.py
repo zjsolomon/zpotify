@@ -51,6 +51,7 @@ def choose_stage(local: dict | None, remote: tuple[Track, float] | None) -> dict
 class App:
     def __init__(self, config: cfg.Config, auth: Auth) -> None:
         self.config = config
+        theme.apply(config.theme)
         self.auth = auth
         self.api = SpotifyAPI(auth)
         self.screen = Screen()

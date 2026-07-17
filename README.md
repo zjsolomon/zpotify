@@ -86,6 +86,12 @@ navigation in views ·
 `q` quit — plus full mouse support (click rows/tabs/buttons, scroll wheel,
 click the progress bar to seek).
 
+## Themes
+
+Settings (`7`) includes an accent **theme** — 12 colors (green default, plus
+cyan, blue, teal, lime, yellow, orange, red, pink, magenta, purple, white)
+that re-skin the tabs, bars, highlights, and visualizer live.
+
 ## Project layout
 
 ```

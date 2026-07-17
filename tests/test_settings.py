@@ -42,6 +42,20 @@ def test_defaults_when_fields_absent(monkeypatch, tmp_path) -> None:
     assert loaded.normalization is False
 
 
+def test_theme_round_trip(monkeypatch, tmp_path) -> None:
+    _tmp_config(monkeypatch, tmp_path)
+    config = cfg.Config(client_id="abc")
+    config.theme = "cyan"
+    config.save()
+    assert cfg.Config.load().theme == "cyan"
+
+
+def test_theme_default_when_absent(monkeypatch, tmp_path) -> None:
+    _tmp_config(monkeypatch, tmp_path)
+    (tmp_path / "config.json").write_text('{"client_id": "abc"}')
+    assert cfg.Config.load().theme == "green"
+
+
 def test_setting_cycle_and_display() -> None:
     state = {"v": 160}
     setting = Setting(

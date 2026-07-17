@@ -59,6 +59,10 @@ def _build_settings(app) -> list[Setting]:
         config.visualizer = v
         app.visualizer = v  # applies live
 
+    def set_theme(v):
+        config.theme = v
+        theme.apply(v)  # applies live
+
     onoff = [(True, "on"), (False, "off")]
     return [
         Setting("streaming quality", "audio bitrate from Spotify (restarts the player)",
@@ -71,6 +75,9 @@ def _build_settings(app) -> list[Setting]:
         Setting("visualizer", "default mode for the now-playing view",
                 [("spectrum", "spectrum"), ("wave", "wave"), ("off", "off")],
                 lambda: config.visualizer, set_visualizer),
+        Setting("theme", "accent color for the whole UI",
+                [(name, name) for name in theme.THEMES],
+                lambda: config.theme, set_theme),
     ]
 
 

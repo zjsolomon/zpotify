@@ -32,7 +32,7 @@ SCOPES = (
 
 
 _KNOWN_KEYS = ("client_id", "volume", "visualizer", "bitrate",
-               "fade_seconds", "pause_fade", "normalization")
+               "fade_seconds", "pause_fade", "normalization", "theme")
 
 
 @dataclass
@@ -44,6 +44,7 @@ class Config:
     fade_seconds: float = 0.0     # track fade in/out; 0 = off
     pause_fade: bool = True       # short fade on pause/resume
     normalization: bool = False   # librespot volume normalisation (restart)
+    theme: str = "green"          # accent color, one of ui.theme.THEMES
     extra: dict = field(default_factory=dict)
 
     @classmethod

@@ -102,7 +102,7 @@ Switch with keys `1`–`7` or click the tabs.
 | 4 | **library** | Your liked songs; `enter` plays, `a` queues, `f` removes from library. |
 | 5 | **queue** | What's coming up next (`R` refreshes). |
 | 6 | **devices** | Every Spotify Connect device on your account; `enter` transfers playback to it (including back to zpotify). |
-| 7 | **settings** | Edit settings in-app (`enter`/`→` next value, `←` previous, click to cycle); saved instantly to `config.json`: streaming quality (96/160/320 kbps), pause/resume fade, volume normalization, default visualizer. Quality and normalization restart the player engine (~2 s blip). |
+| 7 | **settings** | Edit settings in-app (`enter`/`→` next value, `←` previous, click to cycle); saved instantly to `config.json`: streaming quality (96/160/320 kbps), pause/resume fade, volume normalization, default visualizer, and the accent **theme** — 12 colors (green, cyan, blue, teal, lime, yellow, orange, red, pink, magenta, purple, white) that re-skin the tabs, bars, highlights, and visualizer live. Quality and normalization restart the player engine (~2 s blip). |
 
 ## Keyboard reference
 
@@ -196,7 +196,7 @@ Everything lives in `~/.config/zpotify/`:
 
 | Path | Contents |
 |---|---|
-| `config.json` | client ID, volume, visualizer, quality, fade settings |
+| `config.json` | client ID, volume, visualizer, quality, fade, theme settings |
 | `tokens.json` | OAuth tokens (chmod 600) |
 | `librespot/` | librespot's credential + system cache |
 
