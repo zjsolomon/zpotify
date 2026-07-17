@@ -144,3 +144,7 @@ class SettingsView(View):
         if self.listview.rows:
             setting = self.listview.rows[self.listview.selected]
             screen.put(x + 2, y + 3 + list_h, setting.description[:w - 4], theme.FAINT)
+        credit_y = y + h - 2
+        if credit_y > y + 4 + list_h:
+            screen.put(x + 2, credit_y, "created by: ziedo solomon"[:w - 4], theme.FAINT)
+            screen.put(x + 2, credit_y + 1, "github.com/zjsolomon/zpotify/"[:w - 4], theme.FAINT)
