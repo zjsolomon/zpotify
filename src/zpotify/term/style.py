@@ -3,8 +3,13 @@
 Colors are authored as 24-bit RGB. Terminals that support truecolor
 (COLORTERM=truecolor/24bit — iTerm2, Ghostty, Kitty, WezTerm) get exact
 `38;2;R;G;B` codes; everything else (notably Apple Terminal.app, which mangles
-truecolor SGRs) gets the nearest xterm-256 color via `38;5;N`. The mode is
-detected once at Screen.enter(); override with ZPOTIFY_COLOR=truecolor|256.
+truecolor SGRs) gets the nearest xterm-256 color via `38;5;N`.
+
+Terminals identifying as `TERM_PROGRAM=Apple_Terminal` are forced to 256 even
+when they advertise `COLORTERM=truecolor`: Apple Terminal.app mangles `38;2`
+SGRs, and other terminals reporting that identity (e.g. Herd) inherit the same
+bug. The mode is detected once at Screen.enter(); override with
+ZPOTIFY_COLOR=truecolor|256.
 """
 
 from __future__ import annotations
@@ -26,6 +31,10 @@ def detect_color_mode() -> str:
     forced = os.environ.get("ZPOTIFY_COLOR", "").lower()
     if forced in ("truecolor", "256"):
         return forced
+    # Apple Terminal.app mangles 38;2 SGRs; terminals reporting its identity
+    # (e.g. Herd) do too, even while advertising COLORTERM=truecolor.
+    if os.environ.get("TERM_PROGRAM") == "Apple_Terminal":
+        return "256"
     if os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit"):
         return "truecolor"
     return "256"

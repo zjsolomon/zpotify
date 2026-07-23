@@ -16,6 +16,7 @@ def _restore_mode():
 
 def test_detect_color_mode(monkeypatch) -> None:
     monkeypatch.delenv("ZPOTIFY_COLOR", raising=False)
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
     monkeypatch.setenv("COLORTERM", "truecolor")
     assert detect_color_mode() == "truecolor"
     monkeypatch.setenv("COLORTERM", "24bit")
@@ -25,6 +26,18 @@ def test_detect_color_mode(monkeypatch) -> None:
     monkeypatch.setenv("COLORTERM", "truecolor")
     monkeypatch.setenv("ZPOTIFY_COLOR", "256")
     assert detect_color_mode() == "256"  # explicit override wins
+
+
+def test_detect_color_mode_apple_terminal_ignores_truecolor(monkeypatch) -> None:
+    """Terminals reporting Apple_Terminal (incl. Herd) mangle truecolor SGRs,
+    so they fall back to 256 even when COLORTERM advertises truecolor."""
+    monkeypatch.delenv("ZPOTIFY_COLOR", raising=False)
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    assert detect_color_mode() == "256"
+    # ...but the explicit override still wins for a genuine truecolor case.
+    monkeypatch.setenv("ZPOTIFY_COLOR", "truecolor")
+    assert detect_color_mode() == "truecolor"
 
 
 def test_quantizer_known_values() -> None:
