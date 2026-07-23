@@ -170,6 +170,51 @@ def test_attach_can_be_called_again() -> None:
     assert np.all(out == 999)
 
 
+def test_attach_carries_partial_frames_across_pipe_reads() -> None:
+    """Raw pipe reads can split a frame anywhere; the remainder must carry —
+    dropping it would shift every later sample's channel alignment."""
+    import os
+
+    eng = AudioEngine()
+    frames = np.arange(4096 * 2, dtype=np.int16).reshape(-1, 2)
+    payload = frames.tobytes()
+    rfd, wfd = os.pipe()
+    eng.attach(os.fdopen(rfd, "rb", buffering=0))
+    # deliberately misaligned chunk sizes (never a multiple of 4)
+    sizes = [4093, 7, 1, 4097, 2, 4096 * 4]
+    offset = 0
+    for size in sizes:
+        os.write(wfd, payload[offset:offset + min(size, len(payload) - offset)])
+        offset += size
+        if offset >= len(payload):
+            break
+        time.sleep(0.02)  # let the reader consume the odd tail
+    os.close(wfd)
+    reader = eng._reader
+    assert reader is not None
+    reader.join(timeout=2.0)
+    assert not reader.is_alive()
+    assert eng._buffered == 4096
+    out = _drain(eng, 4096)
+    assert np.array_equal(out, frames)  # exact samples, no shift, no loss
+
+
+def test_attach_pipe_reader_exits_on_eof() -> None:
+    import os
+
+    eng = AudioEngine()
+    rfd, wfd = os.pipe()
+    eng.attach(os.fdopen(rfd, "rb", buffering=0))
+    os.write(wfd, _frames(64, value=7).tobytes())
+    os.close(wfd)
+    reader = eng._reader
+    assert reader is not None
+    reader.join(timeout=2.0)
+    assert not reader.is_alive()
+    assert eng._reader_fd is None
+    assert np.all(_drain(eng, 64) == 7)
+
+
 def test_fade_envelope_ramps_down_and_up() -> None:
     eng = AudioEngine(blocksize=441)  # 100 blocks/sec
     # exactly fill the ring: enough for the 20 blocks below, and _write must
@@ -204,7 +249,188 @@ def test_set_env_is_instant_and_flush_keeps_env() -> None:
     assert eng.env == 1.0
 
 
-def test_latency_reflects_buffered_frames() -> None:
+# -- crossfade -----------------------------------------------------------------
+
+def test_crossfade_mixes_tail_into_head() -> None:
+    sr = 44100
+    eng = AudioEngine(samplerate=sr)
+    eng.set_crossfade(0.1)               # X = 4410 frames
+    x = eng._xfade_frames
+    eng._write(_frames(8000, value=10000))   # track 1
+    eng.note_end_of_track()                  # boundary at frame 8000
+    eng._write(_frames(x + 2000, value=-10000))  # track 2 head + spare
+
+    # before the window: pure track 1
+    out = _drain(eng, 8000 - x)
+    assert np.all(out == 10000)
+    # inside the window: mixed samples move from track1 toward track2
+    mix = _drain(eng, x)
+    assert len(mix) == x
+    assert mix[0][0] > 8000                # start ~ track 1
+    assert mix[-1][0] < -8000              # end ~ track 2
+    mid = mix[x // 2][0]
+    assert -3000 < mid < 3000              # halfway: roughly equal blend
+    # equal-power halfway point: each source at ~0.707 gain, so the mix of
+    # opposite-sign equals cancels near zero while power stays constant
+    quarter = mix[x // 4][0]
+    assert quarter > 2500                  # cos(22.5°) − sin(22.5°) ≈ 0.54
+    # after the mix: cursor jumped past the head region already played
+    after = _drain(eng, 2000)
+    assert len(after) == 2000 and np.all(after == -10000)
+
+
+def test_crossfade_off_means_no_mixing() -> None:
+    eng = AudioEngine()
+    eng.set_crossfade(0.0)
+    eng._write(_frames(1000, value=7))
+    eng.note_end_of_track()                # ignored when off
+    eng._write(_frames(1000, value=9))
+    out = _drain(eng, 2000)
+    assert np.all(out[:1000] == 7) and np.all(out[1000:] == 9)
+
+
+def test_crossfade_without_head_plays_tail_unmixed() -> None:
+    """The mix must never start against an empty head: the tail plays plainly
+    to the boundary, then the (late) next track starts as a hard transition."""
+    eng = AudioEngine()
+    eng.set_crossfade(0.1)
+    x = eng._xfade_frames
+    eng._write(_frames(x, value=10000))    # exactly one window of tail
+    eng.note_end_of_track()                # no head has arrived at all
+    out = _drain(eng, x)
+    assert len(out) == x
+    assert np.all(out == 10000)            # NOT faded against silence
+    eng._write(_frames(500, value=-10000))  # head arrives late
+    late = _drain(eng, 500)
+    assert np.all(late == -10000)          # plain start, no mixing
+
+
+def test_crossfade_shrinks_to_available_head() -> None:
+    """Head buffered for only half the window: the mix defers while playing
+    tail, and the overlap becomes what the stream can sustain."""
+    eng = AudioEngine()
+    eng.set_crossfade(0.1)
+    x = eng._xfade_frames
+    eng._write(_frames(2 * x, value=10000))
+    eng.note_end_of_track()                # boundary at 2x
+    eng._write(_frames(x // 2, value=-10000))  # only half a window of head
+
+    out = _drain(eng, 2 * x)               # drain everything readable
+    n_pure = int((out[:, 0] == 10000).sum())
+    assert x <= n_pure < 2 * x             # mix deferred past the naive window
+    mixed = out[n_pure:]
+    # the mix's first sample carries gain 0 (== pure tail), hence the ±1
+    assert abs(len(mixed) - x // 2) <= 1   # overlap shrank to available head
+    assert mixed[-1][0] < -8000            # and does reach the next track
+
+
+def test_set_crossfade_reserves_double_the_overlap() -> None:
+    eng = AudioEngine()
+    base = eng._fill_limit
+    eng.set_crossfade(5.0)
+    assert eng._fill_limit >= 2 * 5 * eng.samplerate  # tail + head
+    eng.set_crossfade(0.0)
+    assert eng._fill_limit == base
+
+
+def test_crossed_ms_counts_audible_position_of_new_track() -> None:
+    sr = 44100
+    eng = AudioEngine(samplerate=sr)
+    eng.set_crossfade(0.1)
+    x = eng._xfade_frames
+    assert eng.crossed_ms is None          # no boundary yet
+    eng._write(_frames(2 * x, value=10))
+    eng.note_end_of_track()
+    eng._write(_frames(2 * x, value=20))
+    _drain(eng, 2 * x - x)                 # up to the mix window
+    _drain(eng, x // 2)                    # halfway through the mix
+    assert abs(eng.crossed_ms - int(x // 2 * 1000 / sr)) <= 2
+    _drain(eng, x // 2)                    # finish the mix
+    _drain(eng, 1000)                      # 1000 frames into plain track 2
+    expected = int((x + 1000) * 1000 / sr)
+    assert abs(eng.crossed_ms - expected) <= 2
+    eng.flush()
+    assert eng.crossed_ms is None          # seek/skip resets the clock
+
+
+def test_note_end_of_track_counts_write_backlog_and_pipe() -> None:
+    """The boundary must count every frame the outgoing track produced:
+    ringed frames, frames held by a blocked _write, and unread pipe bytes."""
+    import os
+
+    eng = AudioEngine(buffer_seconds=0.01)  # tiny fill: blocksize*4 = 4096
+    eng.set_crossfade(0.1)
+    fill = eng._fill_limit
+    extra = 3000
+    rfd, wfd = os.pipe()
+    eng.attach(os.fdopen(rfd, "rb", buffering=0))
+    payload = _frames(fill + extra, value=42).tobytes()
+    writer = threading.Thread(target=lambda: os.write(wfd, payload), daemon=True)
+    writer.start()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and eng._buffered < fill:
+        time.sleep(0.005)
+    assert eng._buffered == fill           # reader blocked at the fill limit
+    time.sleep(0.05)                       # let pipe/backlog settle
+    eng.note_end_of_track()
+    assert eng._boundaries[0] == fill + extra
+    eng.flush()                            # unblock the reader
+    os.close(wfd)
+
+
+def test_note_end_of_track_ignored_when_off_or_empty() -> None:
+    eng = AudioEngine()
+    eng._write(_frames(100))
+    eng.note_end_of_track()                # crossfade off
+    assert not eng.transition_pending
+    eng.set_crossfade(0.1)
+    _drain(eng, 100)
+    eng.note_end_of_track()                # nothing buffered
+    assert not eng.transition_pending
+
+
+def test_note_end_of_track_latency_subtracts_but_clamps() -> None:
+    eng = AudioEngine()
+    eng.set_crossfade(0.1)
+    eng._write(_frames(5000))
+    eng.note_end_of_track(latency_seconds=0.05)   # 2205 frames stale
+    assert eng._boundaries[-1] == 5000 - 2205
+
+    eng2 = AudioEngine()
+    eng2.set_crossfade(0.1)
+    eng2._write(_frames(5000))
+    _drain(eng2, 4000)
+    eng2.note_end_of_track(latency_seconds=99.0)  # absurd: clamped, floored
+    assert eng2._boundaries[-1] == eng2._readpos  # never behind the playhead
+
+
+def test_flush_clears_boundaries_and_mix_state() -> None:
+    eng = AudioEngine()
+    eng.set_crossfade(0.1)
+    eng._write(_frames(1000))
+    eng.note_end_of_track()
+    assert eng.transition_pending
+    eng.flush()
+    assert not eng.transition_pending
+    assert eng.crossed_ms is None
+
+
+def test_pause_mid_mix_resumes_mix_in_place() -> None:
+    eng = AudioEngine(blocksize=441)
+    eng.set_crossfade(0.05)                # X = 2205 frames = 5 blocks
+    x = eng._xfade_frames
+    eng._write(_frames(x, value=10000))
+    eng.note_end_of_track()
+    eng._write(_frames(2 * x, value=-10000))
+    out = np.empty((441, 2), dtype=np.int16)
+    eng._callback(out, 441, None, None)    # first mix block
+    first = out[0][0]
+    eng.hold(0.0)
+    eng._callback(out, 441, None, None)
+    assert np.all(out == 0)                # held: silence, mix state frozen
+    eng.release(0.0)
+    eng._callback(out, 441, None, None)    # mix continues where it left off
+    assert out[0][0] < first               # gain kept ramping, no restart
     eng = AudioEngine()
     base = eng.latency
     assert abs(base - 0.37) < 1e-6  # empty ring: just the pipe estimate

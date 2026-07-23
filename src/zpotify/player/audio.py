@@ -1,30 +1,50 @@
-"""PCM ring buffer, sounddevice output, and local volume.
+"""PCM ring buffer, sounddevice output, crossfade mixing, and local volume.
 
 A daemon reader thread drains librespot's stdout (S16LE, 44100 Hz, stereo,
-interleaved) into a ring buffer addressed by *absolute* frame positions
-(`_written` / `_readpos`). The write side BLOCKS at a small fill limit
-(~0.3 s): that backpressure propagates through the OS pipe to librespot, so
-the whole chain is paced by the audio device consuming frames in real time,
-and controls stay responsive because little audio sits downstream.
+interleaved) into a large ring buffer addressed by *absolute* frame positions
+(`_written` / `_readpos`). The write side BLOCKS at a soft fill limit: that
+backpressure propagates through the OS pipe to librespot, so the whole chain
+is paced by the audio device consuming frames in real time.
+
+The fill limit is small (~0.3 s) for responsive controls — unless crossfade
+is enabled, in which case it grows to hold the overlap: crossfading needs the
+tail of track N *and* the head of track N+1 in memory simultaneously. Track
+boundaries come from librespot's ``end_of_track`` player event (fired only on
+natural completion, never on skips or seeks): :meth:`note_end_of_track`
+converts it to an exact stream position — frames in the ring, plus frames
+stuck in the reader's blocked write, plus frames still in the OS pipe
+(FIONREAD). When playback reaches ``boundary - X`` the consumer mixes
+``ring[cursor]`` (outgoing tail, equal-power fade out) with
+``ring[cursor + X]`` (incoming head, equal-power fade in) for X frames, then
+jumps the cursor past the head region it already played.
 
 Pause is local and instant: :meth:`hold` gates consumption (after an optional
 quick fade) without losing buffer state; :meth:`release` resumes it.
 
 A sounddevice output callback pulls blocks, applies local volume and the fade
 envelope (pause fades / self-heal); on underrun it pads silence and re-arms a
-small prebuffer gate. The visualizer tap records what was actually consumed,
-pre-volume.
+small prebuffer gate. The visualizer tap records what was actually consumed —
+including the crossfaded mix — pre-volume.
 """
 
 from __future__ import annotations
 
+import fcntl
+import select
+import struct
+import termios
 import threading
+from collections import deque
 from typing import BinaryIO
 
 import numpy as np
 
 # Estimated seconds of PCM sitting in the OS pipe between librespot and us.
 _PIPE_SECONDS = 0.37
+
+# Reader wake-up interval while waiting for pipe data (also bounds how long
+# a stop request can go unnoticed).
+_SELECT_TIMEOUT = 0.05
 
 
 def apply_volume(frames: np.ndarray, volume: float) -> np.ndarray:
@@ -42,7 +62,7 @@ def apply_volume(frames: np.ndarray, volume: float) -> np.ndarray:
 
 
 class AudioEngine:
-    """Ring-buffered PCM playback with a spectrum/waveform tap."""
+    """Ring-buffered PCM playback with crossfade and a spectrum/waveform tap."""
 
     def __init__(
         self,
@@ -52,16 +72,20 @@ class AudioEngine:
         volume: float = 0.8,
         buffer_seconds: float = 0.3,
         prebuffer_seconds: float = 0.1,
-        capacity_seconds: float = 2.0,
+        capacity_seconds: float = 28.0,
     ) -> None:
         self.samplerate = samplerate
         self.channels = channels
         self.blocksize = blocksize
         self.volume = volume
 
+        # Physical capacity is generous (a few MB), allocated once and never
+        # resized; the *fill limit* is what actually bounds how far librespot
+        # runs ahead of the speakers.
         self._capacity = max(blocksize * 8, int(samplerate * capacity_seconds))
-        self._fill_limit = max(blocksize * 4, int(samplerate * buffer_seconds))
-        self._prime_frames = min(self._fill_limit // 2,
+        self._base_fill = max(blocksize * 4, int(samplerate * buffer_seconds))
+        self._fill_limit = self._base_fill
+        self._prime_frames = min(self._base_fill // 2,
                                  int(samplerate * prebuffer_seconds))
         self._ring = np.zeros((self._capacity, channels), dtype=np.int16)
         self._written = 0   # absolute frames received from librespot
@@ -71,9 +95,18 @@ class AudioEngine:
         self._cond = threading.Condition()
         self._primed = False
 
+        # Crossfade state.
+        self._xfade_frames = 0
+        self._boundaries: deque[int] = deque()   # absolute track-end positions
+        self._mix_offset = 0   # head tap offset == total mix length (frames)
+        self._mix_left = 0     # frames of mix remaining
+        self._last_boundary: int | None = None   # last boundary that started playing
+        self._boundary_count = 0  # boundaries that reached the speakers (monotonic)
+        self._write_backlog = 0  # frames out of the pipe but not yet in the ring
+
         # Fade envelope: a 0..1 gain ramp stepped per callback block (~23 ms),
         # multiplied into the output after volume. Drives pause fades and the
-        # app's self-heal.
+        # app's self-heal; crossfades are mixed in the ring instead.
         self._env = 1.0
         self._env_target = 1.0
         self._env_rate = 0.0  # per-frame delta
@@ -90,6 +123,7 @@ class AudioEngine:
         self._stream = None  # sounddevice.OutputStream, opened lazily in start()
         self._reader: threading.Thread | None = None
         self._reader_stop = threading.Event()
+        self._reader_fd: int | None = None  # raw pipe fd while attached
 
         self._level = 0.0
         self.last_error: BaseException | None = None
@@ -122,20 +156,37 @@ class AudioEngine:
 
     def _read_loop(self, stream: BinaryIO, chunk_bytes: int) -> None:
         frame_bytes = self.channels * 2
-        # Read whole frames only.
-        chunk_bytes -= chunk_bytes % frame_bytes
+        try:
+            fd: int | None = stream.fileno()
+        except (OSError, ValueError, AttributeError):
+            fd = None  # in-memory stream (tests): plain blocking reads
+        self._reader_fd = fd
+        # The pipe is unbuffered, so reads may return partial frames; the
+        # remainder is carried into the next read — dropping it would shift
+        # every later sample's channel/byte alignment.
+        pending = b""
         while not self._reader_stop.is_set():
+            if fd is not None:
+                try:
+                    ready, _, _ = select.select([fd], [], [], _SELECT_TIMEOUT)
+                except (OSError, ValueError):
+                    break  # fd closed underneath us
+                if not ready:
+                    continue
             try:
                 data = stream.read(chunk_bytes)
             except (ValueError, OSError):
                 break  # stream closed underneath us
             if not data:
                 break  # EOF: librespot exited / restarted
+            data = pending + data
             usable = len(data) - (len(data) % frame_bytes)
+            pending = data[usable:]
             if usable <= 0:
                 continue
             frames = np.frombuffer(data, dtype=np.int16, count=usable // 2)
             self._write(frames.reshape(-1, self.channels))
+        self._reader_fd = None
 
     def _stop_reader(self) -> None:
         self._reader_stop.set()
@@ -177,6 +228,9 @@ class AudioEngine:
         offset = 0
         while offset < n and not self._reader_stop.is_set():
             with self._cond:
+                # Frames held here while blocked are neither in the ring nor
+                # in the pipe; boundary accounting must still count them.
+                self._write_backlog = n - offset
                 free = self._fill_limit - self._buffered
                 if free <= 0:
                     self._cond.wait(timeout=0.1)
@@ -185,26 +239,187 @@ class AudioEngine:
                 self._copy_in(self._written, frames[offset:offset + take])
                 self._written += take
                 offset += take
+                self._write_backlog = n - offset
+        with self._cond:
+            self._write_backlog = 0
+
+    def _advance(self, n: int) -> None:
+        """Move the read cursor forward (``self._cond`` must be held)."""
+        self._readpos += n
+        if n:
+            self._cond.notify()
 
     def _read(self, n: int, out: np.ndarray) -> int:
-        """Pop up to ``n`` frames into ``out``; return how many were available.
-
-        Also feeds the visualizer tap and the smoothed RMS level, so both
-        always describe the audio actually being consumed (pre-volume).
-        """
+        """Pop up to ``n`` frames into ``out``, mixing across any track
+        boundary that falls inside the crossfade window; return frames
+        produced. Also feeds the visualizer tap and the RMS level with what
+        was actually played (pre-volume)."""
         with self._cond:
-            m = min(n, self._buffered)
-            if m > 0:
-                out[:m] = self._copy_out(self._readpos, m)
-                self._readpos += m
-                self._cond.notify()
-                mono = out[:m].astype(np.float32).mean(axis=1) / 32768.0
+            produced = 0
+            while produced < n:
+                want = n - produced
+                if self._mix_left > 0:
+                    x_total = self._mix_offset
+                    m = min(want, self._mix_left, self._buffered)
+                    if m <= 0:
+                        break
+                    tail = self._copy_out(self._readpos, m).astype(np.float32)
+                    head = np.zeros((m, self.channels), dtype=np.float32)
+                    head_avail = self._written - (self._readpos + x_total)
+                    hm = max(0, min(m, head_avail))
+                    if hm:
+                        head[:hm] = self._copy_out(
+                            self._readpos + x_total, hm).astype(np.float32)
+                    k0 = x_total - self._mix_left
+                    theta = (np.arange(k0, k0 + m, dtype=np.float32)
+                             / max(1, x_total))[:, None] * (np.pi / 2)
+                    # Equal-power curves: constant perceived loudness through
+                    # the overlap (cos² + sin² == 1).
+                    mixed = tail * np.cos(theta) + head * np.sin(theta)
+                    out[produced:produced + m] = np.clip(
+                        mixed, -32768, 32767).astype(np.int16)
+                    self._advance(m)
+                    self._mix_left -= m
+                    produced += m
+                    if self._mix_left == 0:
+                        # skip the head region we already played in the mix
+                        self._advance(min(x_total, self._buffered))
+                        self._mix_offset = 0
+                    continue
+                limit = self._buffered
+                if self._xfade_frames > 0 and self._boundaries:
+                    boundary = self._boundaries[0]
+                    dist = boundary - self._readpos
+                    if dist <= 0:
+                        # boundary reached without enough head to mix: the
+                        # next track starts plainly (hard transition)
+                        self._boundaries.popleft()
+                        self._last_boundary = boundary
+                        self._boundary_count += 1
+                        continue
+                    if dist <= self._xfade_frames:
+                        head_avail = self._written - boundary
+                        if head_avail >= dist:
+                            # enough of the next track is buffered to sustain
+                            # the whole overlap: mix `dist` frames, head
+                            # tapped `dist` ahead
+                            self._boundaries.popleft()
+                            self._last_boundary = boundary
+                            self._boundary_count += 1
+                            self._mix_offset = dist
+                            self._mix_left = dist
+                            continue
+                        # head still buffering: keep playing the tail — the
+                        # window shrinks while the head grows, meeting at the
+                        # largest overlap the stream can sustain. Chunk only
+                        # up to the meet point so it's re-evaluated there.
+                        limit = min(limit, max(1, dist - head_avail))
+                    else:
+                        limit = min(limit, dist - self._xfade_frames)
+                m = min(want, limit)
+                if m <= 0:
+                    break
+                out[produced:produced + m] = self._copy_out(self._readpos, m)
+                self._advance(m)
+                produced += m
+
+            if produced:
+                mono = out[:produced].astype(np.float32).mean(axis=1) / 32768.0
                 self._tap_write(mono)
                 rms = float(np.sqrt(np.mean(mono ** 2)))
             else:
                 rms = 0.0
             self._level += (rms - self._level) * 0.3
-        return m
+        return produced
+
+    # -- crossfade / boundaries -------------------------------------------
+
+    def set_crossfade(self, seconds: float) -> None:
+        """Set the crossfade overlap; grows/shrinks the fill limit to match.
+
+        The limit is 2×overlap: at mix start the buffer must hold the whole
+        outgoing tail (X) *and* enough incoming head (X) to sustain the mix.
+        Live-safe: shrinking just lets excess buffered audio drain; growing
+        takes effect on the writer's next wakeup.
+        """
+        seconds = max(0.0, float(seconds))
+        with self._cond:
+            self._xfade_frames = int(seconds * self.samplerate)
+            if self._xfade_frames > 0:
+                self._fill_limit = min(
+                    self._capacity - self.blocksize * 4,
+                    2 * self._xfade_frames + self._base_fill)
+            else:
+                self._fill_limit = self._base_fill
+                self._boundaries.clear()
+                self._mix_offset = 0
+                self._mix_left = 0
+                self._last_boundary = None
+            self._cond.notify_all()
+
+    def _pipe_frames(self) -> int:
+        """Whole frames currently sitting unread in the OS pipe (0 when the
+        attached stream is not a real pipe, e.g. BytesIO in tests)."""
+        fd = self._reader_fd
+        if fd is None:
+            return 0
+        try:
+            raw = fcntl.ioctl(fd, termios.FIONREAD, struct.pack("i", 0))
+            return struct.unpack("i", raw)[0] // (self.channels * 2)
+        except (OSError, ValueError):
+            return 0
+
+    def note_end_of_track(self, latency_seconds: float = 0.0) -> None:
+        """Record 'the current track's last frame has been written'.
+
+        Called (from any thread) when librespot emits its ``end_of_track``
+        player event — fired only on natural completion, never for skips or
+        seeks. The boundary position counts everything the outgoing track has
+        produced: frames in the ring, frames held by a blocked ``_write``,
+        and frames still in the OS pipe. ``latency_seconds`` is how stale the
+        event observation is; librespot keeps delivering the *next* track's
+        frames during that window, so they are subtracted back out.
+        """
+        with self._cond:
+            if self._xfade_frames == 0 or self._buffered == 0:
+                return
+            lag_frames = int(min(max(0.0, latency_seconds), 0.25) * self.samplerate)
+            boundary = (self._written + self._write_backlog
+                        + self._pipe_frames() - lag_frames)
+            boundary = max(boundary, self._readpos)
+            self._boundaries.append(boundary)
+
+    @property
+    def transition_pending(self) -> bool:
+        """True while a marked track boundary is still ahead of the audible
+        position (it clears the moment the crossfade begins). The UI uses
+        this to keep showing the outgoing track: with crossfade on, librespot
+        reports the track change several seconds before you can hear it."""
+        with self._cond:
+            return bool(self._boundaries)
+
+    @property
+    def boundaries_played(self) -> int:
+        """Monotonic count of track boundaries that have reached the speakers
+        (mix started or hard transition). Lets the UI detect that a *specific*
+        parked track change became audible, immune to earlier boundaries."""
+        with self._cond:
+            return self._boundary_count
+
+    @property
+    def crossed_ms(self) -> int | None:
+        """Audible milliseconds into the track that most recently crossed a
+        boundary — an exact stream-counted clock for the progress bar during
+        and after a crossfade. None when no boundary has played since the
+        last flush (seek/skip), where the latency estimate applies instead."""
+        with self._cond:
+            if self._mix_left > 0:
+                played = self._mix_offset - self._mix_left
+            elif self._last_boundary is not None:
+                played = self._readpos - self._last_boundary
+            else:
+                return None
+            return int(played * 1000 / self.samplerate)
 
     # -- envelope / pause ---------------------------------------------------
 
@@ -288,6 +503,10 @@ class AudioEngine:
         with self._cond:
             self._readpos = self._written
             self._primed = False
+            self._boundaries.clear()
+            self._mix_offset = 0
+            self._mix_left = 0
+            self._last_boundary = None
             self._tap[:] = 0.0
             self._cond.notify_all()
 
