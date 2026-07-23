@@ -1,0 +1,908 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inside zpotify — Building a Terminal Music Client From Scratch</title>
+<style>
+  :root {
+    --bg: #fdfdfb; --fg: #1c1c1a; --muted: #5f5f58; --rule: #d8d5cc;
+    --code-bg: #f4f2ec; --code-fg: #232320; --accent: #1a7f4b;
+    --note-bg: #eef4f8; --note-br: #4a7fa5;
+    --warn-bg: #fdf3e7; --warn-br: #b5751f;
+    --ex-bg: #f2f6f1; --ex-br: #1a7f4b;
+    --serif: Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --mono: "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --fg: #e4e2dc; --muted: #a09e97; --rule: #34343c;
+      --code-bg: #1f1f25; --code-fg: #e0ded7; --accent: #4ec98a;
+      --note-bg: #172630; --note-br: #4a7fa5;
+      --warn-bg: #2b2113; --warn-br: #c08c34;
+      --ex-bg: #16241c; --ex-br: #2f8f5b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #16161a; --fg: #e4e2dc; --muted: #a09e97; --rule: #34343c;
+    --code-bg: #1f1f25; --code-fg: #e0ded7; --accent: #4ec98a;
+    --note-bg: #172630; --note-br: #4a7fa5;
+    --warn-bg: #2b2113; --warn-br: #c08c34;
+    --ex-bg: #16241c; --ex-br: #2f8f5b;
+  }
+  :root[data-theme="light"] {
+    --bg: #fdfdfb; --fg: #1c1c1a; --muted: #5f5f58; --rule: #d8d5cc;
+    --code-bg: #f4f2ec; --code-fg: #232320; --accent: #1a7f4b;
+    --note-bg: #eef4f8; --note-br: #4a7fa5;
+    --warn-bg: #fdf3e7; --warn-br: #b5751f;
+    --ex-bg: #f2f6f1; --ex-br: #1a7f4b;
+  }
+
+  body {
+    background: var(--bg); color: var(--fg); font-family: var(--serif);
+    font-size: 11.2pt; line-height: 1.52; margin: 0 auto; padding: 3rem 1.5rem 5rem;
+    max-width: 44rem; hyphens: auto;
+  }
+  h1, h2, h3, h4 { font-family: var(--sans); line-height: 1.22; }
+  h1 { font-size: 1.95rem; letter-spacing: -0.02em; margin: 0 0 .3rem; }
+  h2 {
+    font-size: 1.32rem; margin: 2.6rem 0 .9rem; padding-top: .7rem;
+    border-top: 2px solid var(--rule);
+  }
+  h3 { font-size: 1.03rem; margin: 1.7rem 0 .5rem; }
+  h4 { font-size: .93rem; margin: 1.2rem 0 .4rem; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .06em; }
+  p { margin: 0 0 .85rem; }
+  code { font-family: var(--mono); font-size: .86em;
+         background: var(--code-bg); padding: .08em .3em; border-radius: 3px; }
+  pre {
+    font-family: var(--mono); font-size: .78rem; line-height: 1.45;
+    background: var(--code-bg); color: var(--code-fg); padding: .8rem 1rem;
+    border-radius: 5px; border-left: 3px solid var(--accent);
+    overflow-x: auto; margin: .9rem 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .chapter-num {
+    font-family: var(--sans); font-size: .72rem; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--accent); font-weight: 700;
+    display: block; margin-bottom: .15rem;
+  }
+  .subtitle { font-family: var(--sans); font-size: 1.02rem; color: var(--muted);
+              margin: 0 0 1.6rem; font-weight: 400; }
+  .byline { font-family: var(--sans); font-size: .8rem; color: var(--muted);
+            border-top: 1px solid var(--rule); padding-top: .8rem; margin-top: 2rem; }
+  .note, .warn, .exercises, .solution {
+    padding: .75rem 1rem; margin: 1.1rem 0; border-radius: 4px; font-size: .95em;
+  }
+  .note { background: var(--note-bg); border-left: 4px solid var(--note-br); }
+  .warn { background: var(--warn-bg); border-left: 4px solid var(--warn-br); }
+  .exercises { background: var(--ex-bg); border-left: 4px solid var(--ex-br); }
+  .note p:last-child, .warn p:last-child, .exercises p:last-child,
+  .exercises ol:last-child, .solution p:last-child { margin-bottom: 0; }
+  .label {
+    font-family: var(--sans); font-size: .7rem; font-weight: 700;
+    letter-spacing: .1em; text-transform: uppercase; display: block;
+    margin-bottom: .35rem;
+  }
+  .note .label { color: var(--note-br); }
+  .warn .label { color: var(--warn-br); }
+  .exercises .label { color: var(--ex-br); }
+  ol, ul { margin: 0 0 .85rem; padding-left: 1.4rem; }
+  li { margin-bottom: .35rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .85rem;
+          font-family: var(--sans); margin: 1rem 0; }
+  th, td { text-align: left; padding: .38rem .55rem; border-bottom: 1px solid var(--rule);
+           vertical-align: top; }
+  th { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .scroll { overflow-x: auto; }
+  .toc { font-family: var(--sans); font-size: .9rem; }
+  .toc ol { list-style: none; padding-left: 0; counter-reset: toc; }
+  .toc li { counter-increment: toc; margin-bottom: .3rem; }
+  .toc li::before { content: counter(toc) ". "; color: var(--accent); font-weight: 700; }
+  .fileref { font-family: var(--mono); font-size: .82em; color: var(--muted); }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 2rem 0; }
+  .solution { background: var(--code-bg); border-left: 4px solid var(--muted); }
+  .solution .label { color: var(--muted); }
+
+  @page { size: A4; margin: 17mm 16mm; }
+  @media print {
+    body { font-size: 9.5pt; line-height: 1.45; max-width: none; padding: 0;
+           background: #fff; color: #000; }
+    /* Chapters flow rather than forcing a new page: at this length the
+       whitespace cost of eight forced breaks is three wasted pages. */
+    h2 { margin-top: 1.4rem; }
+    #solutions { page-break-before: always; }
+    h2, h3, h4 { page-break-after: avoid; }
+    pre, .note, .warn, .exercises, .solution, table { page-break-inside: avoid; }
+    .note, .warn, .exercises, .solution { margin: .8rem 0; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Inside zpotify</h1>
+<p class="subtitle">Building a Terminal Music Client From Scratch — Terminals, Streams, and Real-Time Audio in Python</p>
+
+<div class="note">
+  <span class="label">About this book</span>
+  <p>zpotify is a Spotify client that runs entirely in a terminal: no curses, no HTTP
+  library, no audio framework beyond a thin PortAudio binding. Roughly 5,400 lines of
+  Python across 31 modules. That constraint — <em>write it yourself</em> — makes it an
+  unusually good specimen to study, because every layer that a framework would normally
+  hide is here in readable form: the escape-code renderer, the OAuth flow, the ring
+  buffer, the real-time mixer.</p>
+  <p>This book assumes you are comfortable with Python and have met threads before. It
+  does not assume you know anything about termios, OAuth, or digital audio. Each chapter
+  ends with exercises; solutions are in the appendix.</p>
+</div>
+
+<div class="toc">
+  <h4>Contents</h4>
+  <ol>
+    <li>The Shape of the Problem</li>
+    <li>The Terminal Engine</li>
+    <li>Talking to Spotify</li>
+    <li>The Audio Path</li>
+    <li>Crossfade: The Hard Part</li>
+    <li>The Event Loop</li>
+    <li>Living With the Codebase</li>
+  </ol>
+  <p style="color:var(--muted)">Appendix: Solutions to Exercises</p>
+</div>
+
+<h2 id="ch1"><span class="chapter-num">Chapter 1</span>The Shape of the Problem</h2>
+
+<p>Every interesting design decision in zpotify follows from one fact: <strong>Spotify does
+not let you download audio through its Web API.</strong> The API will tell you what is
+playing, search the catalogue, and control playback on a device you own. It will never
+hand you a single PCM sample.</p>
+
+<p>So the program is split down the middle. Two independent channels reach Spotify, and
+they never carry each other's traffic:</p>
+
+<div class="scroll">
+<table>
+  <tr><th>Channel</th><th>Carries</th><th>Implemented by</th></tr>
+  <tr>
+    <td><strong>Control</strong></td>
+    <td>search, playlists, play/pause/seek, queue, what's playing</td>
+    <td><code>api.py</code> + <code>auth.py</code>, stdlib <code>urllib</code> only</td>
+  </tr>
+  <tr>
+    <td><strong>Audio</strong></td>
+    <td>raw PCM samples</td>
+    <td><code>librespot</code>, an external Rust binary, as a subprocess</td>
+  </tr>
+</table>
+</div>
+
+<p>librespot is an open-source reimplementation of the Spotify client protocol. Run in
+pipe mode, it logs into your account, registers itself on the network as a Spotify
+Connect device named <code>zpotify</code>, and writes decoded audio to its standard
+output as raw signed 16-bit little-endian stereo frames at 44,100 Hz. Nothing else. No
+control surface, no UI. The codebase describes it in one phrase worth remembering:
+librespot is used <em>strictly as an audio faucet</em>.</p>
+
+<p>That yields the whole architecture. To play a song, zpotify does not send audio
+anywhere — it asks the Web API to start playback <em>on the librespot device</em>, and
+then reads the bytes that come out of the subprocess's stdout. The two channels meet only
+in the user's ears.</p>
+
+<pre><code>  +------------+    Web API (urllib)     +---------+
+  |  zpotify   | ----------------------> | Spotify |
+  |            | &lt;---------------------- |         |
+  +------------+    playback state       +---------+
+        ^                                      |
+        | stdout: S16LE 44100 stereo           | Connect
+        |                                      v
+  +-----+------+                         +-----------+
+  | ring buffer| &lt;---------------------- | librespot |
+  +-----+------+                         +-----------+
+        | sounddevice callback
+        v
+     speakers</code></pre>
+
+<h3>What this costs</h3>
+
+<p>Three consequences fall out immediately, and you will meet all of them again later.</p>
+
+<p><strong>Premium is mandatory.</strong> Spotify only permits playback outside its
+official clients for Premium accounts — a licensing rule, not a technical one, and
+nothing in the code can route around it.</p>
+
+<p><strong>State is remote and laggy.</strong> zpotify does not know what is playing; it
+polls <code>/me/player</code> every two seconds (<code>POLL_INTERVAL</code> in
+<span class="fileref">ui/app.py</span>). Your phone can change the track and zpotify finds
+out up to two seconds later. Chapter 6 shows the optimistic-UI machinery that hides this
+lag, and Chapter 5 shows what happens when the lag collides with real-time audio.</p>
+
+<p><strong>The API is a hostile dependency.</strong> Spotify has been steadily restricting
+what development-mode applications may call. Endpoints do not merely fail — they fail
+inconsistently. Comments throughout <code>api.py</code> read like field notes from a
+long campaign: search limits above 10 are rejected; the documented
+<code>/playlists/{id}/tracks</code> returns 403 while <code>/items</code> works and keys
+its wrapper <code>item</code> instead of <code>track</code>; dev-mode servers throw 5xx in
+bursts.</p>
+
+<div class="warn">
+  <span class="label">A lesson worth extracting</span>
+  <p>A 200 response does not mean the data is there. <code>/artists/{id}</code> answers
+  happily but returns an object stripped of its <code>genres</code> and
+  <code>popularity</code> fields. Code written against the documentation — or against a
+  status code — will look correct and silently do nothing. Probe payloads, not statuses.</p>
+</div>
+
+<h3>The map</h3>
+
+<p>Six packages, each the subject of a chapter:</p>
+
+<div class="scroll">
+<table>
+  <tr><th>Package</th><th>Responsibility</th><th>Lines</th></tr>
+  <tr><td><code>term/</code></td><td>terminal engine: raw mode, diff renderer, input decoding</td><td>~930</td></tr>
+  <tr><td><code>auth.py</code>, <code>api.py</code></td><td>OAuth PKCE and the Web API client</td><td>~750</td></tr>
+  <tr><td><code>player/</code></td><td>librespot subprocess, ring buffer, mixer, FFT</td><td>~1,050</td></tr>
+  <tr><td><code>ui/</code></td><td>event loop, seven tab views, player bar</td><td>~2,220</td></tr>
+  <tr><td><code>config.py</code>, <code>models.py</code></td><td>on-disk state and plain data types</td><td>~195</td></tr>
+</table>
+</div>
+
+<div class="exercises">
+  <span class="label">Exercises 1</span>
+  <ol>
+    <li>zpotify asks the Web API to play a track "on the librespot device". Why can it not
+    simply ask the API for the audio and play it directly?</li>
+    <li>Suppose you wanted zpotify to work without Premium by streaming from a local music
+    folder instead. Which of the two channels would you replace, and which parts of the
+    codebase would be untouched?</li>
+    <li>The polling interval is two seconds. Name a user-visible artifact this creates, and
+    guess at a mitigation before reading Chapter 6.</li>
+  </ol>
+</div>
+
+<h2 id="ch2"><span class="chapter-num">Chapter 2</span>The Terminal Engine</h2>
+
+<p>A terminal is a byte stream pretending to be a screen. You write escape sequences into
+it; you read escape sequences out of it. <code>term/</code> is the layer that makes that
+bearable, and it is written from scratch — the module docstring is blunt about it:
+<em>"No curses."</em></p>
+
+<h3>Raw mode and the alternate screen</h3>
+
+<p>Normally the kernel's line discipline buffers input until Enter, echoes characters, and
+turns Ctrl-C into a signal. An interactive full-screen program wants none of that.
+<code>Screen.enter()</code> saves the current termios settings, switches the terminal to
+raw mode, and enables three things by escape code: the <em>alternate screen</em> (so the
+user's scrollback survives), mouse reporting, and bracketed paste. <code>exit()</code>
+reverses all of it and is also wired to <code>atexit</code>, because a program that
+crashes while owning a raw tty leaves the user with an unusable shell.</p>
+
+<h3>The frame buffer and the differ</h3>
+
+<p>Redrawing an entire terminal 30 times a second would produce visible tearing and waste
+enormous bandwidth over SSH. So <code>Screen</code> keeps <em>two</em> frames of cells,
+where a cell is a <code>(char, Style)</code> pair:</p>
+
+<pre><code>Cell = tuple[str, Style]
+_NULL_CELL: Cell = ("\uffff", DEFAULT)   # unmatchable sentinel</code></pre>
+
+<p>Drawing calls (<code>put</code>, <code>fill</code>, <code>box</code>) mutate only the
+current frame. <code>present()</code> then walks both frames, finds runs of cells that
+differ, and emits just those runs:</p>
+
+<pre><code>for y in range(self.rows):
+    cur, prev = self._cur[y], self._prev[y]
+    x = 0
+    while x &lt; self.cols:
+        if cur[x] == prev[x]:
+            x += 1; continue
+        run_start = x
+        while x &lt; self.cols and cur[x] != prev[x]:
+            x += 1
+        pen = self._emit_run(out, y, run_start, x, cur, pen)
+self._write("".join(out)); self._flush()
+self._prev = [row[:] for row in self._cur]</code></pre>
+
+<p>Two details in that loop carry more weight than they look. The output is accumulated in
+a list and written <strong>once</strong> — a single <code>write</code> plus a single
+<code>flush</code> per frame, so the terminal never renders a half-updated screen. And
+<code>pen</code> threads through <code>_emit_run</code>, tracking the style currently
+active in the terminal so a style escape is emitted only when the style actually changes.</p>
+
+<p>The <code>_NULL_CELL</code> sentinel is the trick that makes resizing correct. Fill the
+previous frame with a character that can never legitimately appear, and every cell
+compares unequal, so the next <code>present()</code> repaints everything. One sentinel
+replaces an entire "force full redraw" code path.</p>
+
+<h3>Colors that survive contact with real terminals</h3>
+
+<p>Styles are authored as 24-bit RGB. Whether they can be <em>sent</em> that way is a
+different question, resolved once at startup by <code>detect_color_mode()</code>
+(<span class="fileref">term/style.py</span>) in strict precedence:</p>
+
+<pre><code>ZPOTIFY_COLOR override -> TERM_PROGRAM == Apple_Terminal -> COLORTERM -> "256"</code></pre>
+
+<p>Apple Terminal is special-cased because it <em>advertises</em> truecolor support and
+then mangles <code>38;2</code> sequences — so it is forced down the indexed path
+regardless of what it claims. When truecolor is unavailable, <code>xterm256()</code>
+quantizes each color, considering both the 6×6×6 color cube and the 24-step greyscale
+ramp and choosing whichever is nearer in squared distance. Greys matter: a dimmed
+interface hits the greyscale ramp constantly, and cube-only quantization would tint it.</p>
+
+<h3>Reading input: the escape problem</h3>
+
+<p><code>term/input.py</code> parses the byte stream back into <code>Key</code>,
+<code>Mouse</code>, <code>Paste</code>, and <code>Resize</code> events. Most of it is
+table-driven decoding of CSI and SS3 sequences. One case is genuinely undecidable.</p>
+
+<p>When you press Escape, the terminal sends <code>0x1b</code>. When you press the up
+arrow, it sends <code>0x1b [ A</code>. On seeing <code>0x1b</code> with nothing after it,
+the parser cannot know whether the user pressed Escape or whether the rest of an arrow-key
+sequence is still in flight. There is no correct answer available from the bytes alone —
+only from time. So the reader exposes <code>pending_escape</code>, and the main loop
+shortens its select timeout to <code>ESC_TIMEOUT = 0.025</code> seconds; if nothing
+arrives in that window, <code>flush_escape()</code> resolves it as a real Escape.</p>
+
+<div class="note">
+  <span class="label">Design note</span>
+  <p>25 ms is a deliberate compromise. Too short and a slow SSH link splits an arrow-key
+  sequence into a spurious Escape; too long and Escape feels sluggish. This is the only
+  place in the codebase where correctness is bought with a timing guess — worth noticing,
+  because Chapter 5 is about a subsystem that refuses to make that trade.</p>
+</div>
+
+<div class="exercises">
+  <span class="label">Exercises 2</span>
+  <ol>
+    <li>Why does <code>present()</code> copy rows (<code>row[:]</code>) into
+    <code>_prev</code> instead of assigning <code>self._prev = self._cur</code>?</li>
+    <li>A CJK character occupies two terminal columns. <code>put()</code> writes the
+    character and then a <code>_CONT</code> sentinel into the following cell. What would
+    break if the differ printed <code>_CONT</code> like any other character?</li>
+    <li>You are debugging over SSH and arrow keys sometimes register as Escape. Which
+    constant would you adjust, and what does raising it cost?</li>
+    <li>The renderer tracks <code>pen</code> across runs on the same line. Why does it not
+    reset it between lines?</li>
+  </ol>
+</div>
+
+<h2 id="ch3"><span class="chapter-num">Chapter 3</span>Talking to Spotify</h2>
+
+<p>Both modules in this chapter are written against <code>urllib</code> and
+<code>http.server</code>. No <code>requests</code>, no OAuth library.</p>
+
+<h3>PKCE, and why a terminal app needs it</h3>
+
+<p>The classic OAuth authorization-code flow proves the application's identity with a
+client secret. A program distributed to users cannot hold a secret — anyone can read it
+out of the package. PKCE (Proof Key for Code Exchange) replaces the secret with a value
+invented fresh for each login:</p>
+
+<pre><code>verifier  = secrets.token_urlsafe(64)[:64]           # random, kept in memory
+challenge = base64url(sha256(verifier))              # sent to Spotify up front</code></pre>
+
+<p>zpotify sends only the <em>challenge</em> when opening the browser. Spotify redirects
+back with an authorization code, and only then does zpotify send the <em>verifier</em>.
+Spotify hashes it and checks it matches the challenge it stored. An attacker who
+intercepts the redirect gets a code they cannot exchange, because they never saw the
+verifier. Nothing secret was ever shipped.</p>
+
+<p>The redirect needs somewhere to land, so <code>login_interactive()</code> starts a
+one-shot <code>http.server</code> on <code>127.0.0.1:8898</code>, opens the browser,
+waits for the callback, serves a small styled confirmation page, and shuts down.</p>
+
+<h3>Token lifecycle</h3>
+
+<p>Tokens live in <code>~/.config/zpotify/tokens.json</code>, written <code>chmod
+600</code>. Access tokens expire, so <code>get_access_token()</code> refreshes them —
+and it does so <code>EXPIRY_SLACK_SECONDS = 60</code> early, so a token never expires
+midway through a request that was valid when it started.</p>
+
+<p>That method is called from every worker thread in the program, so it holds a lock. Two
+threads noticing expiry simultaneously must not both burn the refresh token.</p>
+
+<h3>The API client as an exercise in defensive programming</h3>
+
+<p><code>SpotifyAPI._request()</code> is where the hostility of Chapter 1 is absorbed.
+Its retry ladder is worth reading closely, because each rung encodes a real failure:</p>
+
+<div class="scroll">
+<table>
+  <tr><th>Status</th><th>Response</th><th>Why</th></tr>
+  <tr><td>401</td><td>force a token refresh, retry <em>once</em></td>
+      <td>a cache that looked fresh but wasn't; once, so a genuine auth failure surfaces</td></tr>
+  <tr><td>429</td><td>sleep for <code>Retry-After</code> (capped), retry</td>
+      <td>rate limiting; the cap stops a hostile header hanging the app</td></tr>
+  <tr><td>5xx</td><td>two retries, 0.8 s then 2.0 s</td>
+      <td>dev-mode servers fail in bursts that ride out</td></tr>
+</table>
+</div>
+
+<p>Beyond the ladder sit smaller scars: gzip bodies that <code>urllib</code> did not
+decode are detected by magic number and inflated by hand; player commands that return
+HTTP 200 with unparseable bodies are treated as successes, because the command
+<em>did</em> succeed; search results are paged ten at a time and de-duplicated, because
+Spotify's pages overlap.</p>
+
+<div class="exercises">
+  <span class="label">Exercises 3</span>
+  <ol>
+    <li>Explain why sending the challenge first and the verifier later defeats an attacker
+    who can read the redirect URL.</li>
+    <li>The 401 branch retries exactly once. Trace what would happen with unlimited
+    retries if the refresh token had been revoked.</li>
+    <li><code>parse_track()</code> synthesizes a URI from the track id when the API omits
+    <code>uri</code>. What class of bug is that defending against, and what is the risk of
+    the fallback?</li>
+    <li>Why must <code>get_access_token()</code> hold a lock, given that Python has a GIL?</li>
+  </ol>
+</div>
+
+<h2 id="ch4"><span class="chapter-num">Chapter 4</span>The Audio Path</h2>
+
+<p>This is where the program stops being a network client and becomes a real-time system.
+Three threads touch audio, and they must never block each other:</p>
+
+<ol>
+  <li>a <strong>reader</strong> thread draining librespot's stdout;</li>
+  <li>the <strong>audio callback</strong>, called by PortAudio on its own high-priority
+  thread, which must return within milliseconds or the speakers click;</li>
+  <li>the <strong>UI thread</strong>, which only ever reads.</li>
+</ol>
+
+<h3>A ring buffer addressed by absolute positions</h3>
+
+<p>The buffer between reader and callback is a fixed numpy array, but it is not indexed
+directly. Two monotonically increasing counters describe it:</p>
+
+<pre><code>self._written = 0   # absolute frames ever received from librespot
+self._readpos = 0   # absolute frames ever consumed by the callback</code></pre>
+
+<p>Physical slots come from <code>position % capacity</code>. Absolute positions never
+wrap, which means the difference between any two of them is meaningful arithmetic:
+<code>_written - _readpos</code> is exactly how much audio is buffered, and — crucially
+for Chapter 5 — a track boundary can be recorded as a plain integer position and compared
+against the playback cursor later, with no modular reasoning at all.</p>
+
+<h3>Backpressure is the pacing mechanism</h3>
+
+<p>Here is the single most important idea in the audio layer. The writer <em>blocks</em>:</p>
+
+<pre><code>free = self._fill_limit - self._buffered
+if free &lt;= 0:
+    self._cond.wait(timeout=0.1)
+    continue</code></pre>
+
+<p>When the ring is full, the reader thread stops reading. The OS pipe between librespot
+and zpotify fills. librespot's own write blocks. The entire chain stalls — and it un-stalls
+only when the audio callback consumes frames, which happens in real time because that is
+what a sound card does.</p>
+
+<p>Nothing anywhere schedules playback. There is no timer, no sleep, no rate calculation.
+The speakers pull, and everything upstream is pulled with them.</p>
+
+<div class="note">
+  <span class="label">Why the limit is small</span>
+  <p><code>_base_fill</code> is about 0.3 seconds. A large buffer would be safer against
+  underruns but would make every control feel unresponsive: audio already in the buffer
+  has to be discarded or heard. The size of this buffer is a direct trade between
+  robustness and responsiveness — and Chapter 5 changes it, with consequences.</p>
+</div>
+
+<h3>Partial reads and frame alignment</h3>
+
+<p>The pipe is unbuffered, so a read can return a byte count that is not a whole number of
+frames — a frame being four bytes (two channels × int16). Truncating that remainder would
+shift every subsequent sample by a byte or two, swapping channels and turning music into
+static. So the loop carries it:</p>
+
+<pre><code>data = pending + data
+usable = len(data) - (len(data) % frame_bytes)
+pending = data[usable:]</code></pre>
+
+<h3>The callback</h3>
+
+<p>PortAudio calls <code>_callback</code> with a block to fill. It gates on a small
+prebuffer (<code>_primed</code>) so a fresh start does not stutter; on underrun it pads
+with silence and re-arms that gate; it applies local volume and a fade envelope; and it
+wraps everything in a bare <code>except</code>, because an exception escaping an audio
+callback takes the stream down permanently.</p>
+
+<p>It also records what it played into a small tap buffer. That tap — post-mix,
+pre-volume — is what <code>SpectrumAnalyzer</code> reads, which is why the visualizer
+responds to what you actually hear rather than what was requested. The analyzer does an
+FFT into 48 log-spaced bins from 40 Hz to 16 kHz with fast attack, slow decay, and
+slow-falling peak holds.</p>
+
+<div class="exercises">
+  <span class="label">Exercises 4</span>
+  <ol>
+    <li>Why are absolute frame positions easier to reason about than head/tail indices into
+    a circular array? Give a concrete operation that becomes trivial.</li>
+    <li>The reader blocks when the ring is full instead of dropping frames. What would the
+    user hear if it dropped them instead?</li>
+    <li>The visualizer taps audio <em>after</em> mixing but <em>before</em> volume. Explain
+    both choices.</li>
+    <li>Suppose <code>pending</code> were removed and remainder bytes discarded. Would the
+    bug be audible immediately? Would a unit test using an in-memory stream catch it?</li>
+  </ol>
+</div>
+
+<h2 id="ch5"><span class="chapter-num">Chapter 5</span>Crossfade: The Hard Part</h2>
+
+<p>Crossfade blends the end of one track into the start of the next. It is optional, off by
+default, and it is by a wide margin the most demanding code in the project — because it
+forces three clocks into agreement: Spotify's idea of the current track, librespot's byte
+stream, and the sound card's playback position.</p>
+
+<h3>Finding the boundary</h3>
+
+<p>To mix the tail of track N with the head of track N+1, you must know exactly where N
+ends in the byte stream. The audio is an undifferentiated PCM stream; nothing in it marks
+a track change.</p>
+
+<p>The naive approach is to detect the pause while librespot loads the next track. The
+codebase tried it and abandoned it: fast cached loads produce no measurable stall at all.
+The working approach uses librespot's <code>--onevent</code> hook, which fires an
+<code>end_of_track</code> event — and, decisively, fires it <strong>only on natural
+completion, never on a skip or a seek</strong>. The event <em>is</em> the definition of
+"the track ended by itself".</p>
+
+<p>Converting that event into a stream position is an accounting problem, because the
+event arrives while audio is in flight in three separate places:</p>
+
+<pre><code>boundary = self._written              # frames already in the ring
+         + self._write_backlog        # frames the blocked writer holds
+         + self._pipe_frames()        # frames still in the OS pipe (FIONREAD)
+         - lag_frames                 # staleness of the observation</code></pre>
+
+<p><code>_pipe_frames()</code> issues a <code>FIONREAD</code> ioctl to ask the kernel how
+many bytes are sitting unread in the pipe. Omit that term and the boundary lands early by
+however much the pipe happened to hold, and the crossfade begins before the track ends.</p>
+
+<h3>Mixing</h3>
+
+<p>Boundaries are queued. As playback approaches one, the consumer mixes
+<code>ring[cursor]</code> (outgoing tail, faded out) with <code>ring[cursor + X]</code>
+(incoming head, faded in) for X frames, then jumps the cursor past the head region it has
+already played. The fade is <em>equal-power</em> — gains follow a curve whose squares sum
+to one — because linear fades dip in perceived loudness at the midpoint, where both
+signals are at half amplitude.</p>
+
+<p>This is also why crossfade needs a bigger buffer. The mixer must hold the tail of one
+track and the head of the next simultaneously, so enabling it widens the fill limit to
+<code>2X + base</code>.</p>
+
+<h3>Three clocks, one screen</h3>
+
+<p>Now the interesting failure. With a 5-second crossfade, Spotify reports the new track
+roughly 5 seconds before you can <em>hear</em> it. Naively adopting the poll would flip
+the title while the previous song is still playing.</p>
+
+<p>So the UI <em>parks</em> track changes. When a poll reports a new track while a
+boundary is still in flight, <code>app.py</code> stores it as
+<code>(state, seen_at, boundaries_played)</code> and keeps displaying the outgoing track.
+Each tick then asks whether the parked change has become real:</p>
+
+<div class="scroll">
+<table>
+  <tr><th>Condition</th><th>Action</th></tr>
+  <tr><td><code>seen_at &lt; _action_at</code></td><td>discard — the user acted; the snapshot is stale</td></tr>
+  <tr><td><code>boundaries_played &gt; played_before</code></td><td>adopt — the blend is audible</td></tr>
+  <tr><td>no boundary, 3 s elapsed</td><td>flush and adopt — it was a remote skip after all</td></tr>
+  <tr><td>12 s + fade elapsed</td><td>flush and adopt — failsafe</td></tr>
+</table>
+</div>
+
+<p>Note the counter comparison. It asks whether <em>this specific</em> parked change became
+audible, not merely whether some boundary played — immune to an earlier boundary
+satisfying a later park. And note the failsafe: a mark that never plays must never be able
+to freeze the interface. In a subsystem coordinating three clocks, "this cannot happen" is
+not a safety argument.</p>
+
+<div class="warn">
+  <span class="label">A live bug — read this before Exercise 4</span>
+  <p>Manual track changes call <code>audio.flush()</code>, which drops the whole buffer,
+  from the API <em>success callback</em> — one network round trip after the keypress. With
+  crossfade on, the fill limit is <code>2X + base</code>: 10.3 s at X=5. In that window
+  librespot has already written seconds of the <em>new</em> track, and the flush discards
+  them along with the old track's tail, so playback resumes several seconds in. With
+  crossfade off the same code discards 0.3 s and nobody notices. The bug scales exactly
+  with a buffer size that exists for an unrelated feature.</p>
+</div>
+
+<div class="exercises">
+  <span class="label">Exercises 5</span>
+  <ol>
+    <li>Why is an <code>end_of_track</code> event a fundamentally better boundary signal
+    than detecting a gap in the audio stream? Name a property no timing heuristic has.</li>
+    <li>Remove the <code>_pipe_frames()</code> term. Describe precisely what the listener
+    hears.</li>
+    <li>Parked adoption compares a monotonic counter rather than a boolean "a boundary
+    played". Construct the sequence of events that makes the boolean wrong.</li>
+    <li>Using the warning box: propose a fix that keeps crossfade working on natural
+    advance while making manual skips behave exactly as they do with crossfade off. What
+    must be true at the moment you flush?</li>
+  </ol>
+</div>
+
+<h2 id="ch6"><span class="chapter-num">Chapter 6</span>The Event Loop</h2>
+
+<p>One thread owns the terminal and all UI state. Everything else reports to it.</p>
+
+<h3>Selectors and the self-pipe trick</h3>
+
+<p>The loop must wake for two unrelated things: keyboard input, and background work
+finishing. The first is a file descriptor; the second is not — a
+<code>queue.Queue</code> has no fd, so <code>select</code> cannot wait on it.</p>
+
+<p>The fix is old and elegant. <code>WorkerPool</code> creates a pipe, registers the read
+end with the selector, and writes one byte whenever a job completes. Now "a result is
+ready" <em>is</em> a readable descriptor:</p>
+
+<pre><code>sel.register(self.input, selectors.EVENT_READ)
+sel.register(self.workers, selectors.EVENT_READ)   # fileno() -> pipe read end
+sel.register(self.control, selectors.EVENT_READ)</code></pre>
+
+<p>Results are queued, not executed, by the worker. <code>drain()</code> runs the callbacks
+on the UI thread — so callbacks may touch UI state freely, and no widget needs a lock.</p>
+
+<h3>Two pools, deliberately</h3>
+
+<p>There are two pools, and the reason is ordering. The general pool has three threads for
+searches and library loads, where concurrency is a win. Player commands go to a
+<strong>single-threaded</strong> pool, because pause, play and seek must reach Spotify in
+the order the user pressed them. Three threads racing to deliver "pause" and "next" would
+occasionally deliver them backwards.</p>
+
+<h3>Optimistic UI and the staleness rule</h3>
+
+<p>A two-second poll would make every keypress feel dead, so local actions mutate state
+immediately: press pause and the icon flips at once, before Spotify is told. This creates
+a race — a poll already in flight will return the <em>old</em> state and undo the
+optimistic update.</p>
+
+<p>The rule is one timestamp. <code>_mark_action()</code> records <code>_action_at</code>;
+every poll remembers when it was <em>requested</em>; and any response whose request
+predates the last action is dropped:</p>
+
+<pre><code>if requested_at &lt; self._action_at:
+    return   # snapshot predates a local action: stale</code></pre>
+
+<h3>Views</h3>
+
+<p>Seven tabs implement a four-method interface: <code>on_show</code> for lazy loading,
+<code>render</code>, <code>handle_key</code> returning whether it consumed the key, and a
+<code>wants_text</code> flag that suppresses single-character hotkeys while a text field
+has focus. Global keys are dispatched first; anything unclaimed falls through to the
+active view.</p>
+
+<p>Clickable regions are registered <em>during</em> render via <code>app.add_hit(x, y, w,
+h, handler)</code> and cleared before every frame. Hit regions cannot drift out of sync
+with what is drawn, because they are produced by the same code that draws it.</p>
+
+<div class="exercises">
+  <span class="label">Exercises 6</span>
+  <ol>
+    <li>Why can a <code>queue.Queue</code> not be passed to <code>selectors</code>, and how
+    does the self-pipe fix it without polling?</li>
+    <li>Worker threads queue results rather than invoking callbacks directly. What class of
+    bugs does that eliminate?</li>
+    <li>The staleness check compares against when a poll was <em>requested</em>, not when it
+    <em>returned</em>. Show why the other choice is wrong.</li>
+    <li>You add a global hotkey <code>g</code>. A view already binds <code>g</code>. Which
+    wins, and where in <code>_handle_key</code> is that decided?</li>
+  </ol>
+</div>
+
+<h2 id="ch7"><span class="chapter-num">Chapter 7</span>Living With the Codebase</h2>
+
+<h3>Configuration</h3>
+
+<p>Everything persistent is under <code>~/.config/zpotify/</code> — overridable with
+<code>ZPOTIFY_CONFIG_DIR</code>, which is what the test suite uses to avoid touching real
+credentials. Adding a setting means touching exactly three places: a field on
+<code>Config</code>, an entry in <code>_KNOWN_KEYS</code>, and a <code>Setting</code> in
+<span class="fileref">ui/views/settings.py</span>. Miss the second and your setting
+silently fails to persist.</p>
+
+<h3>Themes without a repaint</h3>
+
+<p>Theme styles are plain module attributes in <code>ui/theme.py</code>, read at render
+time rather than captured at import:</p>
+
+<pre><code>screen.put(x, y, text, theme.DIM)     # looked up each frame
+theme.apply("cyan")                   # rebinds the module attributes</code></pre>
+
+<p>Because every widget re-reads them on every frame, <code>theme.apply()</code> re-skins
+the entire interface live. There is no observer, no invalidation, no repaint call — the
+30 Hz render loop already re-reads everything.</p>
+
+<h3>Testing a program made of side effects</h3>
+
+<p>179 tests run in under a second with no network and no terminal. That is possible
+because the awkward dependencies are injectable: <code>Screen</code> accepts an output
+stream and a fixed size, so rendering is tested against
+<code>io.StringIO</code>; <code>AudioEngine</code> accepts an in-memory stream;
+<code>WorkerPool.submit</code> is monkeypatched to capture jobs so asynchronous code can be
+stepped synchronously.</p>
+
+<p>The suite's centre of gravity is where the reasoning is hardest — parked adoption,
+boundary arithmetic, escape-sequence decoding — rather than spread evenly. That is the
+right instinct: test where you are most likely to be wrong.</p>
+
+<div class="note">
+  <span class="label">A cautionary tale from this repository's history</span>
+  <p>The crossfade wiring in <code>app.py</code> was once destroyed by a stray
+  <code>git checkout</code> while uncommitted. It was reconstructible <em>only</em> because
+  the test suite specified its behavior precisely enough to rebuild against. Anything the
+  tests did not pin — a dynamic buffer limit, among other things — was lost silently. Tests
+  are a specification you can execute; untested behavior is folklore.</p>
+</div>
+
+<h3>Release</h3>
+
+<p>Publishing is tokenless. Pushing a <code>v*</code> tag triggers a GitHub Actions
+workflow that runs the tests and then publishes to PyPI via trusted publishing (OIDC), so
+no credential exists to leak. CI refuses to publish if the tag disagrees with the version
+in <code>pyproject.toml</code>.</p>
+
+<div class="exercises">
+  <span class="label">Exercises 7</span>
+  <ol>
+    <li>Add a hypothetical <code>show_explicit_badge</code> setting. Name the three edits,
+    and the symptom of forgetting each.</li>
+    <li>Why can <code>theme.apply()</code> re-skin a running UI with no notification
+    mechanism? What property of the render loop is it exploiting?</li>
+    <li>The test suite needs neither a terminal nor a network. Name the injection point
+    that makes each possible.</li>
+    <li>Trusted publishing removes API tokens. What attack does that close that a
+    carefully-scoped token does not?</li>
+  </ol>
+</div>
+
+<h2 id="solutions"><span class="chapter-num">Appendix</span>Solutions to Exercises</h2>
+
+<h4>Chapter 1</h4>
+<div class="solution">
+<p><strong>1.</strong> The Web API exposes no audio endpoint at all — by design, for
+licensing reasons. It can only direct playback to a device already authenticated on the
+account. librespot exists to <em>be</em> such a device while handing the samples to us.</p>
+<p><strong>2.</strong> Replace the audio channel only: <code>player/librespot.py</code> and
+the source feeding the ring buffer. Untouched: <code>term/</code> entirely, the ring buffer
+and callback, the FFT, the event loop, the views' rendering. The control channel
+(<code>api.py</code>, <code>auth.py</code>) would go too, since local files need no Spotify
+account — which is exactly why the two-channel split is the right seam.</p>
+<p><strong>3.</strong> Press pause and nothing happens for up to two seconds. The
+mitigation is optimistic UI: mutate local state immediately and reconcile later
+(Chapter 6).</p>
+</div>
+
+<h4>Chapter 2</h4>
+<div class="solution">
+<p><strong>1.</strong> Assignment would alias both names to the same list objects; the next
+frame's drawing would mutate <code>_prev</code> too, every cell would compare equal, and
+the screen would freeze while the program appeared to run.</p>
+<p><strong>2.</strong> The wide glyph already occupies two columns, so printing a second
+character for the continuation cell would push the rest of the line one column right and
+corrupt the layout — and the terminal's cursor position would no longer match the
+renderer's model of it.</p>
+<p><strong>3.</strong> <code>ESC_TIMEOUT</code>. Raising it makes split sequences less
+likely but adds latency to every genuine Escape press, since Escape can only be confirmed
+by waiting.</p>
+<p><strong>4.</strong> It does not need to: the pen tracks the terminal's actual SGR state,
+which persists across line boundaries. Resetting per line would emit redundant escape
+sequences for no benefit. (Cursor <em>position</em> is a different matter and is re-emitted
+per run.)</p>
+</div>
+
+<h4>Chapter 3</h4>
+<div class="solution">
+<p><strong>1.</strong> The redirect carries the authorization code but never the verifier.
+Exchanging a code requires presenting a verifier whose SHA-256 equals the challenge
+registered at the start — and only the legitimate client has it. The intercepted code is
+useless.</p>
+<p><strong>2.</strong> Each 401 triggers a refresh, which also fails, returning 401 —
+infinite recursion, hammering Spotify, no error ever surfaced. Retrying once distinguishes
+"stale cache" from "genuinely unauthorized".</p>
+<p><strong>3.</strong> Degraded dev-mode responses that omit <code>uri</code> while
+including <code>id</code>; without the fallback one malformed entry poisons a whole play
+payload. The risk is masking a genuinely unplayable item as playable — which is why
+<code>play_tracks()</code> independently filters malformed URIs before sending.</p>
+<p><strong>4.</strong> The GIL protects individual bytecodes, not multi-step sequences. The
+read–check–refresh–store sequence can interleave, so two threads could both refresh and one
+could invalidate the other's token.</p>
+</div>
+
+<h4>Chapter 4</h4>
+<div class="solution">
+<p><strong>1.</strong> Comparisons and differences stay valid without modular arithmetic:
+<code>_written - _readpos</code> is the buffered amount directly. Concretely, recording a
+track boundary as an absolute position lets you later ask "is the cursor within X frames of
+it?" with plain subtraction — with wrapping indices, that test needs case analysis and
+breaks whenever the buffer wraps between marking and comparing.</p>
+<p><strong>2.</strong> Dropped frames are gaps: clicks, or a track that plays slightly fast
+while audio is silently discarded. Blocking instead converts a correctness problem into a
+scheduling one, and the sound card's real-time consumption resolves it.</p>
+<p><strong>3.</strong> After mixing, so a crossfade is visualized as heard rather than
+showing one track while two are audible. Before volume, so the bars do not shrink when you
+turn the volume down — the visualizer reflects the music, not the amplifier.</p>
+<p><strong>4.</strong> Audible almost immediately as static, since a one- or two-byte shift
+inverts and swaps channels. A test using an in-memory stream would likely <em>miss</em> it,
+because such reads return exactly the requested size — the bug needs a real pipe with
+partial reads, which is precisely why the codebase keeps an end-to-end pipe test.</p>
+</div>
+
+<h4>Chapter 5</h4>
+<div class="solution">
+<p><strong>1.</strong> It carries <em>intent</em>. librespot emits it only when a track
+finishes naturally, never on a skip or seek, so it distinguishes cases that are acoustically
+identical. No stall-detection heuristic can tell "the track ended" from "the user skipped"
+— both look like a gap. It is also exact rather than probabilistic; the fast-cached-load
+case produces no stall to detect at all.</p>
+<p><strong>2.</strong> The boundary is computed too early by however much audio sits in the
+pipe, so the mix starts before the outgoing track has finished — you hear the next track
+fade in over the last moments of the current one, and the outgoing track's true ending is
+skipped.</p>
+<p><strong>3.</strong> Park change A while boundary B (from an earlier transition) is still
+queued. B plays. A boolean "has a boundary played" is now true, so A is adopted even though
+its own boundary has not been reached — the title flips early. The counter records the
+value at park time and requires a strict increase, so only a boundary that played
+<em>after</em> parking counts.</p>
+<p><strong>4.</strong> Flush at the moment of the keypress rather than in the response
+callback. The invariant needed at flush time is: <em>the buffer contains only the outgoing
+track.</em> That holds before Spotify has been told to switch, and stops holding as soon as
+librespot begins streaming the new one. Complementary fixes: keep the wide fill limit only
+near a natural boundary, and mark manual actions so a late <code>end_of_track</code> cannot
+attach a boundary to the new track.</p>
+</div>
+
+<h4>Chapter 6</h4>
+<div class="solution">
+<p><strong>1.</strong> <code>select</code> waits on kernel file descriptors, and a
+<code>Queue</code> is user-space objects with a lock. Writing a byte to a pipe on completion
+gives the kernel something to signal, so the loop blocks until <em>either</em> input or a
+result arrives, with no timeout-based polling.</p>
+<p><strong>2.</strong> Data races on UI state. Callbacks run on the thread that owns the
+terminal and every widget, so no shared structure needs a lock and no half-updated frame can
+be rendered.</p>
+<p><strong>3.</strong> A poll requested <em>before</em> your keypress reflects the world
+before your action, even though it arrives after — that is precisely the response that must
+be discarded. Comparing arrival time would keep it (it arrived later) and clobber the
+optimistic update, reintroducing the flicker.</p>
+<p><strong>4.</strong> The global binding wins. <code>_handle_key</code> tests global keys
+in an <code>elif</code> chain and only reaches
+<code>view.handle_key(self, key)</code> in the final branch, so a global binding shadows
+every view's use of that character — the reason a new hotkey must be checked against all
+seven views first.</p>
+</div>
+
+<h4>Chapter 7</h4>
+<div class="solution">
+<p><strong>1.</strong> (a) a field on <code>Config</code> — omit it and the attribute does
+not exist; (b) <code>_KNOWN_KEYS</code> — omit it and the value is dropped when config is
+loaded or saved, so the setting silently resets; (c) a <code>Setting</code> entry — omit it
+and the setting works but is unreachable from the UI.</p>
+<p><strong>2.</strong> Widgets read <code>theme.X</code> at render time, and the loop
+re-renders roughly 30 times a second. Rebinding the module attribute is therefore visible on
+the next frame. It exploits the fact that an immediate-mode renderer has no retained state
+to invalidate.</p>
+<p><strong>3.</strong> Terminal: <code>Screen(out=..., size=...)</code>, which accepts a
+<code>StringIO</code> and a fixed size. Network: <code>ZPOTIFY_CONFIG_DIR</code> redirected
+to a temp directory plus monkeypatched API methods, so no credentials or sockets are
+involved.</p>
+<p><strong>4.</strong> A long-lived token is a bearer credential that exists somewhere —
+CI secrets, a developer machine, a shell history — and can be exfiltrated and replayed
+until revoked. OIDC trusted publishing issues a short-lived credential bound to a specific
+repository, workflow, and environment, so there is no durable secret to steal and a stolen
+one is not replayable elsewhere.</p>
+</div>
+
+<p class="byline">Written against zpotify v0.3.0. File and symbol references point at the
+source as of that release; line numbers drift, names are stabler. The best companion to
+this book is <code>uv run pytest</code> — the suite is the executable specification for
+nearly everything described here.</p>
+
+</body>
+</html>
