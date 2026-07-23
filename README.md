@@ -86,6 +86,14 @@ navigation in views ·
 `q` quit — plus full mouse support (click rows/tabs/buttons, scroll wheel,
 click the progress bar to seek).
 
+## Crossfade
+
+Settings (`7`) has **crossfade** (off by default, 1–12 s), which blends each
+track's ending into the start of the next. It applies only when a track
+advances naturally — skips, picks and seeks always cut clean — and the
+boundary is anchored to librespot's own end-of-track event, so the blend
+starts exactly where the outgoing track really ends rather than at a guess.
+
 ## Themes
 
 Settings (`7`) includes an accent **theme** — 12 colors (green default, plus
