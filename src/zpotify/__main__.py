@@ -156,6 +156,21 @@ def cmd_auth() -> int:
     return 0
 
 
+def _color_report() -> str:
+    """Active color mode plus, when it isn't truecolor, why — 256 is valid, not a fault."""
+    import os
+    from zpotify.term.style import detect_color_mode
+
+    mode = detect_color_mode()
+    if os.environ.get("ZPOTIFY_COLOR", "").lower() in ("truecolor", "256"):
+        return f"{mode}  (forced by ZPOTIFY_COLOR)"
+    if mode == "truecolor":
+        return mode
+    if os.environ.get("TERM_PROGRAM") == "Apple_Terminal":
+        return "256  (Apple_Terminal mangles truecolor SGRs)"
+    return "256  (COLORTERM unset — inside tmux? try ZPOTIFY_COLOR=truecolor)"
+
+
 def cmd_doctor() -> int:
     from zpotify.player.librespot import Librespot, find_librespot
     config = cfg.Config.load()
@@ -189,6 +204,8 @@ def cmd_doctor() -> int:
     except Exception as exc:
         print(f"audio output     BROKEN — {exc}")
         ok = False
+
+    print(f"color            ok  {_color_report()}")
 
     if auth.logged_in and config.client_id:
         try:

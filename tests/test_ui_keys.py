@@ -195,27 +195,45 @@ def _mk_track(i: int):
     return Track(f"t{i}", f"spotify:track:{'y'*18}{i:04d}", f"S{i}", ("Artist",), "Al", 1000)
 
 
-def test_short_queue_tops_up_from_filler_pool(app) -> None:
+def _run_filler(app, submitted) -> None:
+    """Run the queued filler worker and deliver its result, as the pool would."""
+    fn = submitted[0][0] if isinstance(submitted[0], tuple) else submitted[0]
+    result = fn()
+    app._filler_fetching = False
+    app._on_filler(result, None)
+
+
+def test_short_queue_tops_up_from_station(app, monkeypatch) -> None:
     from zpotify.models import PlaybackState
     current = _mk_track(0)
     app.playback = PlaybackState(is_playing=True, progress_ms=0, track=current)
-    app._filler_key = "Artist"
-    app._filler_pool = [_mk_track(i) for i in range(20, 35)]
+    submitted = []
+    monkeypatch.setattr(app.workers, "submit",
+                        lambda fn, cb=None: submitted.append((fn, cb)))
     app._on_queue([_mk_track(1)], None)  # live queue nearly empty
+    # A warm station pool serves the top-up without any network call.
+    app._filler_station._pool = [_mk_track(i) for i in range(20, 35)]
+    _run_filler(app, submitted)
     assert len(app.up_next) == 10        # padded to full
     assert app.up_next[0].id == "t1"     # real queue item stays first
 
 
-def test_full_queue_untouched_and_fillers_deduped(app) -> None:
+def test_full_queue_untouched_and_fillers_deduped(app, monkeypatch) -> None:
     from zpotify.models import PlaybackState
     app.playback = PlaybackState(is_playing=True, progress_ms=0, track=_mk_track(0))
-    app._filler_key = "Artist"
-    app._filler_pool = [_mk_track(1), _mk_track(50)]  # t1 dupes the live queue
+    submitted = []
+    monkeypatch.setattr(app.workers, "submit",
+                        lambda fn, cb=None: submitted.append((fn, cb)))
     live = [_mk_track(i) for i in range(1, 11)]
     app._on_queue(live, None)
     assert app.up_next == live           # already full: no padding
+    assert not submitted                 # and nothing fetched
 
     app._on_queue(live[:2], None)        # short queue: pad, but skip dupe t1
+    # enough pooled to satisfy the top-up without a refetch; t1 is already live
+    app._filler_station._pool = [_mk_track(1), _mk_track(50),
+                                 *(_mk_track(i) for i in range(51, 60))]
+    _run_filler(app, submitted)
     ids = [t.id for t in app.up_next]
     assert ids[:2] == ["t1", "t2"] and "t50" in ids and ids.count("t1") == 1
 
@@ -228,5 +246,97 @@ def test_empty_pool_triggers_filler_fetch(app, monkeypatch) -> None:
     app._on_queue([_mk_track(1)], None)
     assert app._filler_fetching and submitted
     app._filler_fetching = False
-    app._on_filler(("Artist", [_mk_track(i) for i in range(60, 75)]), None)
+    app._on_filler([_mk_track(i) for i in range(60, 75)], None)
     assert len(app.up_next) == 10
+
+
+# -- radio (x) --------------------------------------------------------------------
+
+def test_x_starts_a_station_from_the_current_track(app, monkeypatch) -> None:
+    from zpotify.models import PlaybackState
+    app.playback = PlaybackState(is_playing=True, progress_ms=0, track=_mk_track(0))
+    monkeypatch.setattr(app.workers, "submit", lambda fn, cb=None: None)
+    app._handle_key(Key(char="x"))
+    assert app.station is not None and app.up_next_is_radio
+    assert app.station.label == "Artist"
+
+
+def test_x_without_playback_reports_instead_of_crashing(app) -> None:
+    app.playback = None
+    app._handle_key(Key(char="x"))
+    assert app.station is None and not app.up_next_is_radio
+
+
+def test_station_pushes_picks_into_spotifys_real_queue(app, monkeypatch) -> None:
+    """Radio feeds the real queue, so advance/crossfade behave as they always do."""
+    from zpotify.models import PlaybackState
+    app.playback = PlaybackState(is_playing=True, progress_ms=0, track=_mk_track(0))
+    monkeypatch.setattr(app.workers, "submit", lambda fn, cb=None: None)
+    app._handle_key(Key(char="x"))
+    app.station._pool = [_mk_track(i) for i in range(40, 60)]
+    queued = []
+    monkeypatch.setattr(app.api, "add_to_queue",
+                        lambda uri, device_id=None: queued.append(uri))
+    picks = app._station_work()
+    assert queued == [t.uri for t in picks]
+    assert len(picks) == 8  # tops the empty queue up to REFILL_BELOW
+
+
+def test_station_badge_survives_a_real_queue_poll(app, monkeypatch) -> None:
+    from zpotify.models import PlaybackState
+    app.playback = PlaybackState(is_playing=True, progress_ms=0, track=_mk_track(0))
+    monkeypatch.setattr(app.workers, "submit", lambda fn, cb=None: None)
+    app._handle_key(Key(char="x"))
+    app._on_queue([_mk_track(1)], None)  # the station's own pushes come back here
+    assert app.up_next_is_radio
+
+
+def test_x_queues_even_when_up_next_is_already_full(app, monkeypatch) -> None:
+    """The bug: a padded UP NEXT made `wanted` zero, so `x` did nothing at all."""
+    from zpotify.models import PlaybackState
+    app.playback = PlaybackState(is_playing=True, progress_ms=0, track=_mk_track(0))
+    app.up_next = [_mk_track(i) for i in range(1, 11)]  # full, as in normal use
+    monkeypatch.setattr(app.workers, "submit", lambda fn, cb=None: None)
+    app._handle_key(Key(char="x"))
+    app.station._pool = [_mk_track(i) for i in range(40, 60)]
+    queued = []
+    monkeypatch.setattr(app.api, "add_to_queue",
+                        lambda uri, device_id=None: queued.append(uri))
+    picks = app._station_work(prime=True)
+    assert len(picks) == 8 and len(queued) == 8
+
+
+def test_refills_count_only_the_stations_own_tracks(app, monkeypatch) -> None:
+    """Context tracks fill UP NEXT forever; refills must ignore them."""
+    from zpotify.models import PlaybackState
+    app.playback = PlaybackState(is_playing=True, progress_ms=0, track=_mk_track(0))
+    monkeypatch.setattr(app.workers, "submit", lambda fn, cb=None: None)
+    app._handle_key(Key(char="x"))
+    ours = [_mk_track(i) for i in range(40, 43)]
+    app._on_station(ours, None, True)
+    # a playlist's upcoming tracks sit behind ours and must not count
+    app.up_next = ours + [_mk_track(i) for i in range(80, 110)]
+    assert app.radio_pending() == 3
+    app.station._pool = [_mk_track(i) for i in range(50, 70)]
+    monkeypatch.setattr(app.api, "add_to_queue", lambda uri, device_id=None: None)
+    assert len(app._station_work()) == 5  # tops our 3 back up to 8
+
+
+def test_priming_shows_the_station_in_up_next_immediately(app, monkeypatch) -> None:
+    from zpotify.models import PlaybackState
+    app.playback = PlaybackState(is_playing=True, progress_ms=0, track=_mk_track(0))
+    monkeypatch.setattr(app.workers, "submit", lambda fn, cb=None: None)
+    app._handle_key(Key(char="x"))
+    app.up_next = [_mk_track(99)]  # stale filler, not a real queue entry
+    picks = [_mk_track(i) for i in range(40, 48)]
+    app._on_station(picks, None, True)
+    assert [t.id for t in app.up_next] == [t.id for t in picks]
+
+
+def test_priming_that_finds_nothing_turns_radio_off(app, monkeypatch) -> None:
+    from zpotify.models import PlaybackState
+    app.playback = PlaybackState(is_playing=True, progress_ms=0, track=_mk_track(0))
+    monkeypatch.setattr(app.workers, "submit", lambda fn, cb=None: None)
+    app._handle_key(Key(char="x"))
+    app._on_station([], None, True)
+    assert app.station is None and not app.up_next_is_radio

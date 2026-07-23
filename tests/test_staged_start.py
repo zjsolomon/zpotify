@@ -177,10 +177,23 @@ def test_enter_on_staged_radio_row_starts_chain_there(app, monkeypatch) -> None:
 
 
 def test_fetch_radio_excludes_current_and_dedupes(app, monkeypatch) -> None:
+    """The staged fill builds a real station, minus the seed and duplicates."""
     _stage_remote(app)
+
     class R:
+        # deliberately dirty: the seed itself, and one track twice
         tracks = [TRACK, RADIO[0], RADIO[0], *RADIO[1:12]]
-    monkeypatch.setattr(app.api, "search", lambda q, limit=20: R())
+        artists: list = []  # seed artist lookup finds nothing
+
+    monkeypatch.setattr(app.api, "search",
+                        lambda q, types=(), limit=20, offset=0: R())
+    monkeypatch.setattr(app.api, "artist_albums", lambda artist_id, limit=20: [])
+    monkeypatch.setattr(app.api, "top_tracks",
+                        lambda time_range="medium_term", limit=50: [])
+    monkeypatch.setattr(app.api, "saved_tracks", lambda limit=50: [])
+    monkeypatch.setattr(app.api, "recently_played", lambda limit=50: [])
+    monkeypatch.setattr(app.api, "audio_features", lambda ids: {})
+
     radio = app._fetch_radio()
     assert TRACK.id not in [t.id for t in radio]
     assert len(radio) == 10
@@ -211,6 +224,14 @@ def test_play_tracks_filters_malformed_uris(app, monkeypatch) -> None:
 def _mk_track(i: int) -> Track:
     return Track(f"t{i}", f"spotify:track:{'z'*18}{i:04d}", f"S{i}", ("A",), "Al", 200000)
 
+
+def _quiet_tick(app, now: float) -> None:
+    """Run _tick with the polling timers pushed out (no worker submits)."""
+    app._next_poll = now + 999
+    app._next_queue_poll = now + 999
+    app._tick(now)
+
+
 def test_manual_play_flushes_old_audio(app, monkeypatch) -> None:
     """Enter on any list is a plain play: the old track's audio is cut."""
     thens = []
@@ -222,3 +243,129 @@ def test_manual_play_flushes_old_audio(app, monkeypatch) -> None:
     app.play_tracks(uris=["spotify:track:" + "q" * 22])
     thens[-1](None)                           # simulate API success
     assert app.audio._buffered == 0           # old audio gone
+
+
+# -- crossfade-aware track display ------------------------------------------------
+
+def _enable_crossfade(app, seconds: float = 2.0) -> None:
+    app.config.fade_seconds = seconds
+    app.audio.set_crossfade(seconds)
+
+
+def test_track_change_display_waits_for_audible_boundary(app) -> None:
+    a, b = _mk_track(1), _mk_track(2)
+    _enable_crossfade(app)
+    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=1000, track=a),
+                        time.monotonic())
+    # librespot streamed ahead: boundary marked but not yet audible
+    app.audio._boundaries.append(10_000)
+
+    late = PlaybackState(is_playing=True, progress_ms=5, track=b)
+    app._on_playback(late, None)
+    assert app.playback.track.id == a.id      # still showing the outgoing track
+    assert app._pending_playback is not None
+
+    app.audio._boundaries.clear()             # boundary reached the speakers
+    app.audio._boundary_count += 1
+    _quiet_tick(app, time.monotonic())
+    assert app.playback.track.id == b.id      # now adopted
+    assert app._pending_playback is None
+
+
+def test_pending_track_discarded_after_user_action(app) -> None:
+    a, b = _mk_track(1), _mk_track(2)
+    _enable_crossfade(app)
+    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=1000, track=a),
+                        time.monotonic())
+    app.audio._boundaries.append(10_000)
+    app._on_playback(PlaybackState(is_playing=True, progress_ms=5, track=b), None)
+    assert app._pending_playback is not None
+    app._mark_action()                        # user skipped/sought meanwhile
+    app.audio._boundaries.clear()
+    app.audio._boundary_count += 1
+    _quiet_tick(app, time.monotonic())
+    assert app._pending_playback is None
+    assert app.playback.track.id == a.id      # stale snapshot not adopted
+
+
+def test_remote_track_change_without_boundary_flushes(app) -> None:
+    """A skip from another device must cut the big standing buffer, not let
+    the old track play on for seconds."""
+    import numpy as np
+
+    a, b = _mk_track(1), _mk_track(2)
+    _enable_crossfade(app)
+    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=1000, track=a),
+                        time.monotonic())
+    app.audio._write(np.full((500, 2), 5, dtype="int16"))
+    app._on_playback(PlaybackState(is_playing=True, progress_ms=5, track=b), None)
+    assert app.playback.track.id == b.id      # adopted immediately
+    assert app._pending_playback is None
+    assert app.audio._buffered == 0           # stale audio cut
+
+
+def test_remote_seek_flushes_but_natural_jump_does_not(app) -> None:
+    import numpy as np
+
+    a = _mk_track(1)
+    _enable_crossfade(app)
+    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=10_000, track=a),
+                        time.monotonic())
+    app.audio._write(np.full((500, 2), 5, dtype="int16"))
+    # same track, +60s: a seek from another device
+    app._on_playback(PlaybackState(is_playing=True, progress_ms=70_000, track=a), None)
+    assert app.audio._buffered == 0
+
+    # but with a boundary in flight (repeat-one restart), no flush
+    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=10_000, track=a),
+                        time.monotonic())
+    app.audio._write(np.full((500, 2), 5, dtype="int16"))
+    app.audio._boundaries.append(10_000)
+    app._on_playback(PlaybackState(is_playing=True, progress_ms=70_000, track=a), None)
+    assert app.audio._buffered == 500
+
+
+def test_near_end_park_without_boundary_cuts_over(app) -> None:
+    """Poll beat the end_of_track event: park briefly; if no boundary ever
+    arrives it was a remote skip near the end — flush and adopt."""
+    import numpy as np
+
+    a, b = _mk_track(1), _mk_track(2)
+    _enable_crossfade(app)
+    # 5s from the end of a 200s track: inside the near-end window
+    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=195_000, track=a),
+                        time.monotonic())
+    app.audio._write(np.full((500, 2), 5, dtype="int16"))
+    app._on_playback(PlaybackState(is_playing=True, progress_ms=5, track=b), None)
+    assert app._pending_playback is not None  # parked despite no boundary
+    assert app.playback.track.id == a.id
+    _quiet_tick(app, time.monotonic() + 3.5)  # 3s grace expired, no boundary
+    assert app.playback.track.id == b.id
+    assert app.audio._buffered == 0
+
+
+def test_parked_failsafe_adopts_after_timeout(app) -> None:
+    a, b = _mk_track(1), _mk_track(2)
+    _enable_crossfade(app)
+    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=1000, track=a),
+                        time.monotonic())
+    app.audio._boundaries.append(10_000)      # boundary that never plays
+    app._on_playback(PlaybackState(is_playing=True, progress_ms=5, track=b), None)
+    assert app._pending_playback is not None
+    _quiet_tick(app, time.monotonic() + 12.0 + app.config.fade_seconds + 1.0)
+    assert app.playback.track.id == b.id      # failsafe: UI never wedges
+    assert app._pending_playback is None
+
+
+def test_crossfade_off_keeps_plain_adoption(app) -> None:
+    """fade_seconds == 0 must leave track-change handling exactly as before:
+    no parking, no flushing."""
+    import numpy as np
+
+    a, b = _mk_track(1), _mk_track(2)
+    app._adopt_playback(PlaybackState(is_playing=True, progress_ms=1000, track=a),
+                        time.monotonic())
+    app.audio._write(np.full((500, 2), 5, dtype="int16"))
+    app._on_playback(PlaybackState(is_playing=True, progress_ms=5, track=b), None)
+    assert app.playback.track.id == b.id      # adopted immediately
+    assert app.audio._buffered == 500         # nothing flushed

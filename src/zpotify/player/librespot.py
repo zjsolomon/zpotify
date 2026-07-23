@@ -17,10 +17,14 @@ the process exited (``kind="exit"``); it never restarts itself.
 
 from __future__ import annotations
 
+import io
+import os
 import re
 import shutil
+import stat
 import subprocess
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,15 +50,48 @@ def find_librespot() -> str | None:
 
 @dataclass
 class LibrespotEvent:
-    """A parsed line of interest from librespot's stderr log.
+    """A parsed line of interest from librespot's stderr log or player events.
 
     ``kind`` is one of ``auth_url``, ``connected``, ``playing``, ``paused``,
-    ``stopped``, ``error``, ``exit``.  ``data`` carries kind-specific extras
-    (e.g. ``{"url": ...}`` for ``auth_url``, ``{"code": rc}`` for ``exit``).
+    ``stopped``, ``end_of_track``, ``error``, ``exit``.  ``data`` carries
+    kind-specific extras (e.g. ``{"url": ...}`` for ``auth_url``,
+    ``{"code": rc}`` for ``exit``, ``{"track_id", "latency"}`` for
+    ``end_of_track``).
     """
 
     kind: str
     data: dict = field(default_factory=dict)
+
+
+# Player events (from the --onevent hook) worth surfacing. ``end_of_track``
+# fires only when a track plays to natural completion — never for skips or
+# seeks — which is exactly the boundary the crossfade mixer needs; the
+# transport kinds double as faster poll nudges than stderr parsing.
+_PLAYER_EVENT_KINDS = {
+    "end_of_track": "end_of_track",
+    "playing": "playing",
+    "paused": "paused",
+    "stopped": "stopped",
+}
+
+
+def _parse_player_event(line: str) -> LibrespotEvent | None:
+    """Parse one ``PLAYER_EVENT TRACK_ID POSITION_MS`` hook line, or None."""
+    parts = line.split()
+    if not parts:
+        return None
+    kind = _PLAYER_EVENT_KINDS.get(parts[0])
+    if kind is None:
+        return None
+    data: dict = {"event": parts[0]}
+    if len(parts) > 1:
+        data["track_id"] = parts[1]
+    if len(parts) > 2:
+        try:
+            data["position_ms"] = int(parts[2])
+        except ValueError:
+            pass
+    return LibrespotEvent(kind, data)
 
 
 def _parse_stderr_line(line: str) -> LibrespotEvent | None:
@@ -101,7 +138,10 @@ class Librespot:
         self._stopping = False
         self._stderr_thread: threading.Thread | None = None
         self._watchdog_thread: threading.Thread | None = None
+        self._events_thread: threading.Thread | None = None
         self.stderr_tail: deque[str] = deque(maxlen=200)
+        self._hook_path = self.cache_dir / "onevent.sh"
+        self._events_path = self.cache_dir / "player-events.log"
 
     @property
     def credentials_cached(self) -> bool:
@@ -119,10 +159,14 @@ class Librespot:
             "--volume-ctrl", "fixed",
             "--initial-volume", "100",
             "--disable-audio-cache",
-            # Gapless prefetch makes librespot log "Loading <next>" seconds
-            # before the audible boundary, which breaks boundary-aligned
-            # fades and flushes downstream. The cost is a tiny inter-track gap.
+            # Keeps the sink stop/start (and its player events) aligned with
+            # track edges; librespot still *fetches* the next track ahead, so
+            # the PCM stream stays continuous through natural boundaries.
             "--disable-gapless",
+            # Player events (end_of_track above all) via a tiny hook script
+            # appending lines to a log we tail; fired only at real player
+            # transitions, unlike the loosely-parsed stderr log.
+            "--onevent", str(self._hook_path),
         ]
         if self.normalization:
             argv.append("--enable-volume-normalisation")
@@ -143,16 +187,24 @@ class Librespot:
         except OSError:
             pass
         self._stopping = False
+        self._write_event_hook()
+        # Unbuffered pipes: the audio reader needs the raw fd so its byte
+        # accounting and pipe-fill queries (FIONREAD) see the true stream
+        # state — a Python-side buffer would hide bytes from both.
         self._proc = subprocess.Popen(
             self._build_argv(binary),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=1 << 20,
+            bufsize=0,
         )
         self._stderr_thread = threading.Thread(
             target=self._read_stderr, name="librespot-stderr", daemon=True
         )
         self._stderr_thread.start()
+        self._events_thread = threading.Thread(
+            target=self._read_events, name="librespot-events", daemon=True
+        )
+        self._events_thread.start()
         self._watchdog_thread = threading.Thread(
             target=self._watch, name="librespot-watchdog", daemon=True
         )
@@ -169,7 +221,10 @@ class Librespot:
         proc = self._proc
         if proc is None or proc.stderr is None:
             return
-        for raw in iter(proc.stderr.readline, b""):
+        # The pipes are unbuffered (see start()); rebuffer stderr locally so
+        # readline doesn't degrade to byte-at-a-time reads.
+        stderr = io.BufferedReader(proc.stderr)
+        for raw in iter(stderr.readline, b""):
             line = raw.decode("utf-8", "replace").rstrip("\n")
             if not line:
                 continue
@@ -177,6 +232,47 @@ class Librespot:
             event = _parse_stderr_line(line)
             if event is not None:
                 self._emit(event)
+
+    def _write_event_hook(self) -> None:
+        """(Re)create the --onevent hook script and truncate the event log."""
+        self._events_path.write_text("")
+        self._hook_path.write_text(
+            "#!/bin/sh\n"
+            f'echo "${{PLAYER_EVENT:-}} ${{TRACK_ID:-}} ${{POSITION_MS:-}}"'
+            f' >> "{self._events_path}"\n'
+        )
+        self._hook_path.chmod(self._hook_path.stat().st_mode
+                              | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    def _read_events(self) -> None:
+        """Tail the --onevent log, emitting parsed player events.
+
+        Each emitted event carries ``latency``: seconds between the hook
+        appending the line (the log's mtime) and us observing it — the
+        crossfade boundary math subtracts the frames delivered meanwhile.
+        """
+        proc = self._proc
+        path = self._events_path
+        pos = 0
+        while proc is not None and not self._stopping:
+            try:
+                info = os.stat(path)
+                if info.st_size > pos:
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        f.seek(pos)
+                        chunk = f.read()
+                        pos = f.tell()
+                    latency = max(0.0, time.time() - info.st_mtime)
+                    for line in chunk.splitlines():
+                        event = _parse_player_event(line)
+                        if event is not None:
+                            event.data["latency"] = latency
+                            self._emit(event)
+            except OSError:
+                pass  # log briefly missing (restart): retry next tick
+            if proc.poll() is not None:
+                break
+            time.sleep(0.03)
 
     def _watch(self) -> None:
         proc = self._proc

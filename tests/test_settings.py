@@ -72,6 +72,27 @@ def test_setting_cycle_and_display() -> None:
     assert state["v"] == 320
 
 
+def test_crossfade_setting_applies_live_without_restart() -> None:
+    from types import SimpleNamespace
+
+    from zpotify.player.audio import AudioEngine
+    from zpotify.ui.views.settings import _build_settings
+
+    config = cfg.Config(client_id="abc")
+    app = SimpleNamespace(config=config, audio=AudioEngine(), visualizer="off")
+    row = next(s for s in _build_settings(app) if s.label == "crossfade")
+    assert not row.needs_restart                # applies live, no player blip
+    assert row.current_display() == "off"
+    base = app.audio._fill_limit
+
+    row.cycle(1)                                # off -> 1 s
+    assert config.fade_seconds == 1.0
+    assert app.audio._fill_limit > base         # engine resized immediately
+    row.cycle(-1)                               # back to off
+    assert config.fade_seconds == 0.0
+    assert app.audio._fill_limit == base        # exact old behavior restored
+
+
 def test_setting_cycle_recovers_from_unknown_value() -> None:
     state = {"v": 999}
     setting = Setting(

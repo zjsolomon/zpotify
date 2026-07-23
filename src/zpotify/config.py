@@ -41,7 +41,7 @@ class Config:
     volume: float = 0.8
     visualizer: str = "spectrum"  # spectrum | wave | off
     bitrate: int = 320            # 96 | 160 | 320 kbps (librespot restart)
-    fade_seconds: float = 0.0     # track fade in/out; 0 = off
+    fade_seconds: float = 0.0     # crossfade overlap on auto-advance; 0 = off
     pause_fade: bool = True       # short fade on pause/resume
     normalization: bool = False   # librespot volume normalisation (restart)
     theme: str = "green"          # accent color, one of ui.theme.THEMES

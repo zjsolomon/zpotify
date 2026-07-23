@@ -38,7 +38,11 @@ class QueueView(View):
         return False
 
     def render(self, app, screen: Screen, x: int, y: int, w: int, h: int) -> None:
-        header = "up next" + ("  (loading…)" if self.loading else "  (R refreshes)")
+        station = getattr(app, "station", None)
+        label = "up next"
+        if getattr(app, "up_next_is_radio", False) and station is not None:
+            label = f"up next · radio — {station.label}"
+        header = label + ("  (loading…)" if self.loading else "  (R refreshes)")
         screen.put(x + 2, y, header, theme.DIM)
         if self.tracks.rows:
             self.tracks.render(screen, x + 1, y + 1, w - 2, h - 1)

@@ -17,6 +17,9 @@ class Track:
     album: str
     duration_ms: int
     explicit: bool = False
+    # Artist ids parallel to `artists`; radio needs them to look up genres.
+    # Absent from sessions written before radio existed, hence the default.
+    artist_ids: tuple[str, ...] = ()
 
     @property
     def artist(self) -> str:
@@ -25,7 +28,8 @@ class Track:
     def to_dict(self) -> dict:
         return {"id": self.id, "uri": self.uri, "name": self.name,
                 "artists": list(self.artists), "album": self.album,
-                "duration_ms": self.duration_ms, "explicit": self.explicit}
+                "duration_ms": self.duration_ms, "explicit": self.explicit,
+                "artist_ids": list(self.artist_ids)}
 
     @classmethod
     def from_dict(cls, data: dict) -> "Track":
@@ -34,7 +38,8 @@ class Track:
                    artists=tuple(data.get("artists") or ()),
                    album=data.get("album", ""),
                    duration_ms=int(data.get("duration_ms", 0)),
-                   explicit=bool(data.get("explicit", False)))
+                   explicit=bool(data.get("explicit", False)),
+                   artist_ids=tuple(data.get("artist_ids") or ()))
 
 
 @dataclass(frozen=True)

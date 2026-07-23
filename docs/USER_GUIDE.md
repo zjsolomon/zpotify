@@ -7,6 +7,7 @@ Everything you need to run Spotify entirely from your terminal.
 - [Everyday use](#everyday-use)
 - [The views](#the-views)
 - [Keyboard reference](#keyboard-reference)
+- [Radio](#radio)
 - [Mouse reference](#mouse-reference)
 - [Visualizers](#visualizers)
 - [How playback works](#how-playback-works)
@@ -21,6 +22,14 @@ Everything you need to run Spotify entirely from your terminal.
 | **librespot** (`brew install librespot`) | The Spotify Connect engine zpotify uses as its audio source. |
 | **uv** | Runs the project (`uv run zpotify`). |
 | A terminal with truecolor + mouse support | iTerm2, Ghostty, WezTerm, Kitty, Terminal.app, most modern emulators. |
+
+Colors are authored as 24-bit RGB and sent as-is to terminals that advertise
+`COLORTERM=truecolor`; everything else gets the nearest xterm-256 color, which
+looks slightly flatter but is always correct. Apple Terminal.app is always
+treated as 256-color — it advertises truecolor but mangles the sequences.
+`zpotify doctor` prints the mode it picked; override it with
+`ZPOTIFY_COLOR=truecolor` or `ZPOTIFY_COLOR=256` (useful under tmux, which
+hides `COLORTERM` from the app).
 
 ## One-time setup
 
@@ -102,7 +111,7 @@ Switch with keys `1`–`7` or click the tabs.
 | 4 | **library** | Your liked songs; `enter` plays, `a` queues, `f` removes from library. |
 | 5 | **queue** | What's coming up next (`R` refreshes). |
 | 6 | **devices** | Every Spotify Connect device on your account; `enter` transfers playback to it (including back to zpotify). |
-| 7 | **settings** | Edit settings in-app (`enter`/`→` next value, `←` previous, click to cycle); saved instantly to `config.json`: streaming quality (96/160/320 kbps), pause/resume fade, volume normalization, default visualizer, and the accent **theme** — 12 colors (green, cyan, blue, teal, lime, yellow, orange, red, pink, magenta, purple, white) that re-skin the tabs, bars, highlights, and visualizer live. Quality and normalization restart the player engine (~2 s blip). |
+| 7 | **settings** | Edit settings in-app (`enter`/`→` next value, `←` previous, click to cycle); saved instantly to `config.json`: streaming quality (96/160/320 kbps), **crossfade** (off/1–12 s — blends each track's ending into the next, only when a track advances naturally; skips, picks and seeks always cut clean; off = plain transitions exactly as before), pause/resume fade, volume normalization, default visualizer, and the accent **theme** — 12 colors (green, cyan, blue, teal, lime, yellow, orange, red, pink, magenta, purple, white) that re-skin the tabs, bars, highlights, and visualizer live. Quality and normalization restart the player engine (~2 s blip); crossfade applies live. |
 
 ## Keyboard reference
 
@@ -133,6 +142,7 @@ Switch with keys `1`–`7` or click the tabs.
 | `R` | refresh (queue & devices views) |
 | `esc` | leave search input / go back from playlist tracks |
 | `v` | cycle visualizer: spectrum → wave → off |
+| `x` | start **radio** from the current track (see below) |
 | `?` | help overlay (any key closes it) |
 | `q` | quit — shows a confirmation popup; `y` quits, any other key (or a click) cancels |
 | `ctrl-c` | quit immediately, no confirmation |
@@ -143,6 +153,31 @@ Switch with keys `1`–`7` or click the tabs.
 - **Scroll wheel** scrolls lists; scrolling over the `vol NN%` readout changes volume.
 - **Click the progress bar** (the thin line above the track title) to seek.
 - **Click** the `⏮ ▶ ⏭` transport buttons and the `[shuffle]` / `[repeat]` flags.
+
+## Radio
+
+Press `x` while something is playing to start an endless station seeded from
+that track. UP NEXT switches to `UP NEXT · RADIO — <artist>`, and the station
+keeps Spotify's queue topped up in the background — it never runs out, and each
+refill digs further rather than repeating what it already offered.
+
+Stations are zpotify's own work. Spotify closed its `/recommendations`
+endpoint (along with related-artists, artist top-tracks and all of `/browse`)
+to personal apps, so there is no "official" radio to call. Instead each station
+is built from the endpoints that still answer:
+
+- the seed artist's **genre tags**, expanded by searching those genres;
+- **your own listening** — top tracks and saved library, filtered to those genres;
+- **deep cuts** from the seed artist's albums.
+
+Candidates are ranked by how closely their audio features (energy, valence,
+danceability, acousticness, tempo) match the seed, then spread out so no artist
+dominates and none plays twice in a row. Playing something else, or restarting
+zpotify, ends the station.
+
+One caveat worth knowing: Spotify has announced the removal of the audio-features
+endpoint for personal apps. When it goes, stations lose the similarity ranking
+but keep working — the mix just gets less finely sorted.
 
 ## Visualizers
 
