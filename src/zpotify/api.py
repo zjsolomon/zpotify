@@ -382,52 +382,15 @@ class SpotifyAPI:
         tracks = (parse_track(i) for i in items if i is not None)
         return [t for t in tracks if t is not None]
 
-    # -- radio building blocks ----------------------------------------------------
-    #
-    # Spotify closed /recommendations (404), /artists/{id}/related-artists,
-    # /artists/{id}/top-tracks, /browse/* and the batch /artists?ids= (all 403)
-    # to development-mode apps. /artists/{id} answers but returns a stripped
-    # object with no `genres` and no `popularity` (album `genres` come back
-    # empty too), so there is no genre or similarity signal to query at all.
-    # What survives — search, album listings, the user's own listening, and
-    # audio features — is what radio.py builds stations out of.
-
-    def artist_albums(self, artist_id: str, limit: int = 20) -> list[Album]:
-        data = self._request(
-            "GET", f"/artists/{artist_id}/albums",
-            params={"limit": limit, "include_groups": "album,single"},
-        ) or {}
-        albums = (parse_album(a) for a in data.get("items", []) or [])
-        return [a for a in albums if a is not None and a.id]
-
-    def top_tracks(self, time_range: str = "medium_term", limit: int = 50) -> list[Track]:
-        """The user's own most-played tracks (`user-top-read`).
-
-        ``time_range`` is short_term | medium_term | long_term.
-        """
-        data = self._request(
-            "GET", "/me/top/tracks", params={"time_range": time_range, "limit": limit}
-        ) or {}
-        tracks = (parse_track(t) for t in data.get("items", []) or [])
+    def artist_top_tracks(self, artist_id: str) -> list[Track]:
+        data = (
+            self._request(
+                "GET", f"/artists/{artist_id}/top-tracks", params={"market": "from_token"}
+            )
+            or {}
+        )
+        tracks = (parse_track(t) for t in data.get("tracks", []) or [])
         return [t for t in tracks if t is not None]
-
-    def audio_features(self, track_ids: list[str]) -> dict[str, dict]:
-        """Audio features keyed by track id, for up to 100 ids in one call.
-
-        Spotify has announced this endpoint's removal for development-mode
-        apps; it still answers today. Callers must treat an empty result as
-        "no ranking available" rather than an error.
-        """
-        if not track_ids:
-            return {}
-        data = self._request(
-            "GET", "/audio-features", params={"ids": ",".join(track_ids[:100])}
-        ) or {}
-        out: dict[str, dict] = {}
-        for feat in data.get("audio_features") or []:
-            if isinstance(feat, dict) and feat.get("id"):
-                out[feat["id"]] = feat
-        return out
 
 
 # -- parsing helpers ----------------------------------------------------------------
@@ -438,9 +401,7 @@ def parse_track(item: dict | None) -> Track | None:
     if item is None or item.get("is_local"):
         return None
     album = item.get("album") or {}
-    raw_artists = item.get("artists", []) or []
-    artists = tuple(a.get("name", "") for a in raw_artists)
-    artist_ids = tuple(a.get("id", "") for a in raw_artists if a.get("id"))
+    artists = tuple(a.get("name", "") for a in item.get("artists", []) or [])
     # Degraded dev-mode responses occasionally omit `uri`; the id is always
     # present, and a synthesized uri beats an empty one poisoning a payload.
     track_id = item.get("id", "")
@@ -453,7 +414,6 @@ def parse_track(item: dict | None) -> Track | None:
         album=album.get("name", ""),
         duration_ms=item.get("duration_ms", 0),
         explicit=bool(item.get("explicit", False)),
-        artist_ids=artist_ids,
     )
 
 
