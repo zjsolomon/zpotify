@@ -1,6 +1,6 @@
 [project]
 name = "zpotify"
-version = "0.2.1"
+version = "0.3.0"
 description = "Spotify in your terminal — a from-scratch TUI client with real audio visualizers"
 readme = "README.md"
 license = "MIT"
