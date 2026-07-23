@@ -19,7 +19,6 @@ from zpotify.models import PlaybackState, Track
 from zpotify.player.audio import AudioEngine
 from zpotify.player.fft import SpectrumAnalyzer
 from zpotify.player.librespot import Librespot, LibrespotEvent
-from zpotify.radio import REFILL_BELOW, Station
 from zpotify.term.events import Key, Mouse, Paste, Resize
 from zpotify.term.screen import Screen
 from zpotify.term.input import InputReader
@@ -87,21 +86,15 @@ class App:
         self._stage_attempted = False
         self._staged_session: dict | None = None
         self._session_saved_at = 0.0
-        # Radio. `station` is the live generator (see radio.py — Spotify's own
-        # recommendations API is closed to personal apps, so zpotify builds
-        # stations from the listener's library ranked by audio similarity). It
-        # fills an empty staged queue locally, and pushes into Spotify's real
-        # queue once a session is live.
+        # Radio fill for an empty staged queue (artist-search based — the
+        # real recommendations API is closed to personal apps).
         self.up_next_is_radio = False
-        self.station: Station | None = None
-        self._station_busy = False
-        self._radio_ids: set[str] = set()  # tracks this station put in the queue
         self._radio_tries = 0
         self._radio_retry_at: float | None = None
         # Live-queue top-up: UP NEXT should never sit (nearly) empty, so short
-        # queues are padded from a passive station. Kept per seed artist so
-        # the 15s queue poll doesn't rebuild constantly.
-        self._filler_station: Station | None = None
+        # queues are padded with current-artist tracks. Pooled per artist so
+        # the 15s queue poll doesn't refetch constantly.
+        self._filler_pool: list[Track] = []
         self._filler_key: str | None = None
         self._filler_fetching = False
         self.up_next: list[Track] = []   # queue preview for the now-playing view
@@ -563,8 +556,6 @@ class App:
             self.cycle_repeat()
         elif char == "v":
             self.cycle_visualizer()
-        elif char == "x":
-            self.start_radio()
         elif char == "?":
             self.help_visible = True
         elif char == "/":
@@ -637,12 +628,6 @@ class App:
                 and self._staged and not self.up_next):
             self._radio_retry_at = None
             self.workers.submit(self._fetch_radio, self._on_radio)
-        # Keep a live station ahead of the player without waiting for the
-        # 15s queue poll to notice its tracks running out.
-        if (self.station is not None and not self._staged
-                and self.device_id is not None
-                and self.radio_pending() < REFILL_BELOW):
-            self._pump_station()
         # Adopt a held-back track change once its boundary is audible (the
         # crossfade has begun), or cut over if no boundary materializes.
         self._resolve_pending_playback(now)
@@ -785,107 +770,29 @@ class App:
             self._radio_tries = 0
             self.workers.submit(self._fetch_radio, self._on_radio)
 
-    def start_radio(self) -> None:
-        """Start an endless station seeded from whatever is playing now."""
-        state = self.playback
-        seed = state.track if state is not None else None
-        if seed is None or not seed.id:
-            self.notify("play something first — radio seeds from the current track",
-                        error=True)
-            return
-        self.station = Station(self.api, seed)
-        self.up_next_is_radio = True
-        self._radio_ids = set()
-        # Display-only fillers are not real queue entries; drop them so UP NEXT
-        # shows what the station actually queues.
-        self._filler_station = None
-        self._filler_key = None
-        self.notify(f"radio: {self.station.label} — building…")
-        self._pump_station(prime=True)
-
-    def stop_radio(self) -> None:
-        self.station = None
-        self.up_next_is_radio = False
-        self._radio_ids = set()
-
-    def radio_pending(self) -> int:
-        """How many of the station's own tracks are still queued ahead.
-
-        Counting *our* tracks rather than the whole queue matters: playing
-        from a playlist leaves dozens of context tracks in UP NEXT forever,
-        and a station that measured those would never top itself up.
-        """
-        return sum(1 for t in self.up_next if t.id in self._radio_ids)
-
-    def _pump_station(self, prime: bool = False) -> None:
-        """Ask the station for more, on a worker. Safe to call every tick."""
-        if self.station is None or self._station_busy:
-            return
-        self._station_busy = True
-        self.workers.submit(
-            lambda: self._station_work(prime),
-            lambda result, error: self._on_station(result, error, prime))
-
-    def _station_work(self, prime: bool = False) -> list[Track]:
-        """Worker: refill the station and hand the picks to Spotify's queue.
-
-        Pushing into the real queue (rather than keeping a private list) means
-        auto-advance, crossfade and the queue view all keep working exactly as
-        they do for any other playback. Queued tracks play before the current
-        context resumes, so the station stays in front of it.
-        """
-        station = self.station
-        if station is None:
-            return []
-        station.exclude(self.up_next)
-        # Priming always queues a full batch: pressing `x` while a queue is
-        # already showing has to visibly do something.
-        wanted = REFILL_BELOW if prime else max(0, REFILL_BELOW - self.radio_pending())
-        if station.pending < wanted:
-            station.refill()
-        picks = station.take(wanted)
-        queued: list[Track] = []
-        for track in picks:
-            if not track.uri:
+    def _fetch_artist_tracks(self, seed: Track, exclude: set[str],
+                             limit: int) -> list[Track]:
+        """Worker: radio-ish list built from the seed track's artist search.
+        (Spotify closed the recommendations endpoint to personal apps, so
+        this is the closest honest approximation.)"""
+        query = seed.artists[0] if seed.artists else seed.name
+        results = self.api.search(query, limit=20)
+        seen = set(exclude)
+        out: list[Track] = []
+        for t in results.tracks:
+            if t.id in seen or not t.uri:
                 continue
-            try:
-                self.api.add_to_queue(track.uri, device_id=self.device_id)
-            except ApiError:
-                break  # device went away or rate-limited; try again next tick
-            queued.append(track)
-        return queued
-
-    def _on_station(self, result, error, prime: bool = False) -> None:
-        self._station_busy = False
-        if error is not None:
-            self.notify("radio: could not reach Spotify — will retry", error=True)
-            return
-        self._radio_ids.update(t.id for t in result)
-        if prime:
-            if not result:
-                self.notify("radio: found nothing to play from that track", error=True)
-                self.stop_radio()
-                return
-            # Show the station immediately; the queue poll reconciles it.
-            self.up_next = list(result)
-            label = self.station.label if self.station is not None else ""
-            self.notify(f"radio: {label} — {len(result)} queued, n skips into it")
-        if result:
-            self.refresh_queue_soon()
+            seen.add(t.id)
+            out.append(t)
+            if len(out) >= limit:
+                break
+        return out
 
     def _fetch_radio(self) -> list[Track]:
-        """Worker: local radio fill for a staged (not yet playing) session.
-
-        Nothing is playing yet, so there is no real queue to push into — the
-        picks are returned for UP NEXT to display and chain from.
-        """
         state = self.playback
         if state is None or state.track is None:
             return []
-        station = Station(self.api, state.track)
-        self.station = station
-        station.refill()
-        return station.take(10)
+        return self._fetch_artist_tracks(state.track, {state.track.id}, 10)
 
     def _on_radio(self, result, error) -> None:
         if not self._staged or self.up_next:
@@ -934,50 +841,40 @@ class App:
             return  # don't clobber a staged/radio queue with the dead session's
         if error is None and isinstance(result, list):
             self.up_next = result
-            # A running station feeds this very queue, so its badge stays on.
-            self.up_next_is_radio = self.station is not None
+            self.up_next_is_radio = False
             self._maybe_top_up_queue()
 
     def _seed_key(self, track: Track) -> str:
         return track.artists[0] if track.artists else track.name
 
     def _maybe_top_up_queue(self) -> None:
-        """Keep UP NEXT from sitting (nearly) empty.
-
-        With a station running this is the station's job — it pushes into
-        Spotify's real queue. Otherwise a passive station seeded from the
-        current track supplies display-only fillers: enter chains from them,
-        but they are never pushed into Spotify's queue.
-        """
+        """Pad a short live queue with current-artist tracks so UP NEXT always
+        offers something to play next. Fillers are display + direct-play
+        options (enter chains from them); they are not pushed into Spotify's
+        real queue."""
         state = self.playback
         if (state is None or state.track is None or self._staged
                 or len(self.up_next) >= 10 or self._filler_fetching):
             return
-        if self.station is not None:
-            self._pump_station()
-            return
         seed = state.track
-        key = self._seed_key(seed)
-        if self._filler_key != key or self._filler_station is None:
-            self._filler_key = key
-            self._filler_station = Station(self.api, seed)
-        station = self._filler_station
-        station.exclude([seed, *self.up_next])
-        want = 10 - len(self.up_next)
+        exclude = {seed.id} | {t.id for t in self.up_next}
+        if self._filler_key == self._seed_key(seed):
+            fresh = [t for t in self._filler_pool if t.id not in exclude]
+            if fresh:
+                self.up_next = self.up_next + fresh[:10 - len(self.up_next)]
+                return
         self._filler_fetching = True
-        self.workers.submit(lambda: self._filler_work(station, want),
-                            self._on_filler)
-
-    def _filler_work(self, station: Station, want: int) -> list[Track]:
-        if station.pending < want:
-            station.refill()
-        return station.take(want)
+        key = self._seed_key(seed)
+        self.workers.submit(
+            lambda: (key, self._fetch_artist_tracks(seed, exclude, 20)),
+            self._on_filler)
 
     def _on_filler(self, result, error) -> None:
         self._filler_fetching = False
         if error is not None or not result:
             return
-        self.up_next = self.up_next + result[:10 - len(self.up_next)]
+        self._filler_key, self._filler_pool = result
+        self._maybe_top_up_queue()
 
     def _render(self) -> None:
         screen = self.screen
@@ -1097,7 +994,6 @@ class App:
             (", / .", "seek -10s / +10s"), ("+ / -", "volume"),
             ("s", "toggle shuffle"), ("r", "cycle repeat"),
             ("v", "visualizer: spectrum / wave / off"),
-            ("x", "start radio from the current track"),
             ("/", "search from anywhere (floating box)"),
             ("1-7", "switch view (7 = settings)"),
             ("tab / shift+tab", "next / previous tab"),

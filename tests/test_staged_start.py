@@ -177,23 +177,10 @@ def test_enter_on_staged_radio_row_starts_chain_there(app, monkeypatch) -> None:
 
 
 def test_fetch_radio_excludes_current_and_dedupes(app, monkeypatch) -> None:
-    """The staged fill builds a real station, minus the seed and duplicates."""
     _stage_remote(app)
-
     class R:
-        # deliberately dirty: the seed itself, and one track twice
         tracks = [TRACK, RADIO[0], RADIO[0], *RADIO[1:12]]
-        artists: list = []  # seed artist lookup finds nothing
-
-    monkeypatch.setattr(app.api, "search",
-                        lambda q, types=(), limit=20, offset=0: R())
-    monkeypatch.setattr(app.api, "artist_albums", lambda artist_id, limit=20: [])
-    monkeypatch.setattr(app.api, "top_tracks",
-                        lambda time_range="medium_term", limit=50: [])
-    monkeypatch.setattr(app.api, "saved_tracks", lambda limit=50: [])
-    monkeypatch.setattr(app.api, "recently_played", lambda limit=50: [])
-    monkeypatch.setattr(app.api, "audio_features", lambda ids: {})
-
+    monkeypatch.setattr(app.api, "search", lambda q, limit=20: R())
     radio = app._fetch_radio()
     assert TRACK.id not in [t.id for t in radio]
     assert len(radio) == 10

@@ -7,7 +7,6 @@ Everything you need to run Spotify entirely from your terminal.
 - [Everyday use](#everyday-use)
 - [The views](#the-views)
 - [Keyboard reference](#keyboard-reference)
-- [Radio](#radio)
 - [Mouse reference](#mouse-reference)
 - [Visualizers](#visualizers)
 - [How playback works](#how-playback-works)
@@ -142,7 +141,6 @@ Switch with keys `1`–`7` or click the tabs.
 | `R` | refresh (queue & devices views) |
 | `esc` | leave search input / go back from playlist tracks |
 | `v` | cycle visualizer: spectrum → wave → off |
-| `x` | start **radio** from the current track (see below) |
 | `?` | help overlay (any key closes it) |
 | `q` | quit — shows a confirmation popup; `y` quits, any other key (or a click) cancels |
 | `ctrl-c` | quit immediately, no confirmation |
@@ -153,31 +151,6 @@ Switch with keys `1`–`7` or click the tabs.
 - **Scroll wheel** scrolls lists; scrolling over the `vol NN%` readout changes volume.
 - **Click the progress bar** (the thin line above the track title) to seek.
 - **Click** the `⏮ ▶ ⏭` transport buttons and the `[shuffle]` / `[repeat]` flags.
-
-## Radio
-
-Press `x` while something is playing to start an endless station seeded from
-that track. UP NEXT switches to `UP NEXT · RADIO — <artist>`, and the station
-keeps Spotify's queue topped up in the background — it never runs out, and each
-refill digs further rather than repeating what it already offered.
-
-Stations are zpotify's own work. Spotify closed its `/recommendations`
-endpoint (along with related-artists, artist top-tracks and all of `/browse`)
-to personal apps, so there is no "official" radio to call. Instead each station
-is built from the endpoints that still answer:
-
-- the seed artist's **genre tags**, expanded by searching those genres;
-- **your own listening** — top tracks and saved library, filtered to those genres;
-- **deep cuts** from the seed artist's albums.
-
-Candidates are ranked by how closely their audio features (energy, valence,
-danceability, acousticness, tempo) match the seed, then spread out so no artist
-dominates and none plays twice in a row. Playing something else, or restarting
-zpotify, ends the station.
-
-One caveat worth knowing: Spotify has announced the removal of the audio-features
-endpoint for personal apps. When it goes, stations lose the similarity ranking
-but keep working — the mix just gets less finely sorted.
 
 ## Visualizers
 
