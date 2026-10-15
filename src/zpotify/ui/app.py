@@ -13,7 +13,7 @@ import time
 from typing import Callable
 
 from zpotify import config as cfg
-from zpotify.api import ApiError, SpotifyAPI
+from zpotify.api import ApiError, RateLimited, SpotifyAPI, format_wait
 from zpotify.auth import Auth, NeedsLogin
 from zpotify.models import PlaybackState, Track
 from zpotify.player.audio import AudioEngine
@@ -27,7 +27,15 @@ from zpotify.ui import theme
 from zpotify.ui.workers import WorkerPool
 
 FRAME = 1 / 30
-POLL_INTERVAL = 2.0
+# Playback polling: fast right after something happened (a keypress, a
+# librespot player event), slow otherwise. A flat 2s poll all day earned a
+# ~12h Spotify 429 on /me/player*; librespot events already nudge a poll on
+# every local transition, so the idle rate only covers remote changes.
+POLL_ACTIVE = 2.0
+POLL_IDLE = 10.0
+ACTIVE_WINDOW = 20.0     # seconds after activity that count as "active"
+QUEUE_POLL = 30.0        # also refreshed on every track change
+DISCOVERY_RETRY = 30.0   # device discovery failed for a non-rate-limit reason
 ESC_TIMEOUT = 0.025
 SESSION_SAVE_INTERVAL = 5.0
 # Crossfade adoption tuning (see _classify_change / _resolve_pending_playback).
@@ -102,6 +110,8 @@ class App:
         self._last_track_id: str | None = None
         self._poll_at = 0.0          # monotonic time of last successful poll
         self._next_poll = 0.0
+        self._activity_at = 0.0      # monotonic time of last action/player event
+        self._rediscover_at: float | None = None  # retry device discovery then
         self.device_id: str | None = None
         self.user_name = ""
         self.visualizer = config.visualizer  # spectrum | wave | off
@@ -218,8 +228,13 @@ class App:
         return None
 
     def _on_device_found(self, device_id, error) -> None:
+        if isinstance(error, RateLimited):
+            self.notify(f"player unavailable: {error.message}", error=True)
+            self._rediscover_at = time.monotonic() + error.retry_after + 1.0
+            return
         if error is not None:
-            self.notify(f"device discovery failed: {error}", error=True)
+            self.notify(f"device discovery failed: {error} — retrying", error=True)
+            self._rediscover_at = time.monotonic() + DISCOVERY_RETRY
             return
         if device_id is None:
             self.notify("librespot device never appeared in Spotify Connect", error=True)
@@ -245,7 +260,10 @@ class App:
             self.notify("librespot exited — restarting…", error=True)
             self.workers.submit(self._restart_librespot, None)
         elif event.kind in ("playing", "paused", "stopped"):
+            self._activity_at = time.monotonic()
             self._next_poll = 0.0  # confirm via API soon
+        elif event.kind == "end_of_track":
+            self._activity_at = time.monotonic()
 
     def _restart_librespot(self) -> None:
         time.sleep(1.0)
@@ -298,7 +316,7 @@ class App:
                     offset_position: int | None = None, offset_uri: str | None = None,
                     position_ms: int | None = None) -> None:
         if self.device_id is None:
-            self.notify("player device not ready yet", error=True)
+            self._notify_device_unavailable()
             return
         if uris is not None:
             # One malformed uri (e.g. from a degraded API response) makes
@@ -321,9 +339,18 @@ class App:
             # manual play: cut the old audio and ungate if we were pause-held
             then=lambda _: (self.audio.flush(), self.audio.release(0.15)))
 
+    def _notify_device_unavailable(self) -> None:
+        blocked = self.api.blocked_for("/me/player")
+        if blocked > 0:
+            self.notify("player unavailable: rate-limited by Spotify — "
+                        f"try again in {format_wait(blocked)}", error=True)
+        else:
+            self.notify("player device not ready yet", error=True)
+
     def _mark_action(self) -> None:
         """An optimistic local mutation happened; stale polls must be dropped."""
         self._action_at = time.monotonic()
+        self._activity_at = self._action_at
 
     def toggle_play(self) -> None:
         state = self.playback
@@ -331,7 +358,7 @@ class App:
             # staged track: there is no Spotify session to resume — start a
             # fresh one that recreates the old session as closely as possible
             if self.device_id is None:
-                self.notify("player device not ready yet", error=True)
+                self._notify_device_unavailable()
                 return
             session = self._staged_session or {}
             self._staged = False
@@ -613,17 +640,36 @@ class App:
 
     # -------------------------------------------------------------- rendering
 
+    def poll_interval(self, now: float) -> float:
+        """Seconds until the next playback poll, given recent activity."""
+        interval = POLL_ACTIVE if now - self._activity_at < ACTIVE_WINDOW else POLL_IDLE
+        state = self.playback
+        if (interval > POLL_ACTIVE and state is not None and state.is_playing
+                and state.track is not None and state.track.duration_ms > 0):
+            # don't sleep through a track change: wake just after the end
+            remaining = (state.track.duration_ms - self.progress_ms()) / 1000
+            interval = min(interval, max(POLL_ACTIVE, remaining + 0.5))
+        return interval
+
     def _tick(self, now: float) -> None:
-        if self.device_id is not None and now >= self._next_poll:
-            self._next_poll = now + POLL_INTERVAL
+        # While Spotify has the player endpoints rate-limited, don't even
+        # queue requests: the API would only fail them locally.
+        player_ok = self.device_id is not None and self.api.blocked_for("/me/player") <= 0
+        if player_ok and now >= self._next_poll:
+            self._next_poll = now + self.poll_interval(now)
             self.workers.submit(
                 self.api.playback,
                 lambda result, error, t0=now: self._on_playback(result, error, t0))
         if self.visualizer == "spectrum":
             self.analyzer.update(self.audio.latest(2048))
-        if self.device_id is not None and now >= self._next_queue_poll:
-            self._next_queue_poll = now + 15.0
+        if player_ok and now >= self._next_queue_poll:
+            self._next_queue_poll = now + QUEUE_POLL
             self.workers.submit(self.api.queue, self._on_queue)
+        if (self.device_id is None and self._rediscover_at is not None
+                and now >= self._rediscover_at):
+            self._rediscover_at = None
+            self.notify("looking for the player device again…")
+            self.workers.submit(self._find_our_device, self._on_device_found)
         if (self._radio_retry_at is not None and now >= self._radio_retry_at
                 and self._staged and not self.up_next):
             self._radio_retry_at = None

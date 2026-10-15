@@ -220,6 +220,16 @@ def cmd_doctor() -> int:
             print(f"account          BROKEN — {exc}")
             ok = False
 
+        # The player endpoints can be rate-limited on their own (seen: a ~12h
+        # 429 on /me/player* while /me answered fine), so probe one directly.
+        try:
+            from zpotify.api import SpotifyAPI
+            SpotifyAPI(auth).devices()
+            print("player api       ok")
+        except Exception as exc:
+            print(f"player api       BROKEN — {exc}")
+            ok = False
+
     print("all good — run `zpotify`" if ok else "fix the above, then re-run `zpotify doctor`")
     return 0 if ok else 1
 

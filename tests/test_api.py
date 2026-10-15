@@ -15,7 +15,7 @@ from email.message import Message
 
 import pytest
 
-from zpotify.api import ApiError, SpotifyAPI, parse_album, parse_artist, parse_device, parse_playback, parse_playlist, parse_track
+from zpotify.api import ApiError, RateLimited, SpotifyAPI, format_wait, parse_album, parse_artist, parse_device, parse_playback, parse_playlist, parse_track
 
 
 class DummyAuth:
@@ -296,7 +296,7 @@ def test_401_twice_raises_api_error(monkeypatch):
     assert exc_info.value.status == 401
 
 
-# -- 429: retries honoring Retry-After, capped at 30s, up to 3 retries ------------------
+# -- 429: short waits retried in place (up to 3x), long ones block the bucket ---------
 
 
 def test_429_retry_honors_retry_after(monkeypatch):
@@ -319,19 +319,61 @@ def test_429_retry_honors_retry_after(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_429_retry_after_capped_at_30(monkeypatch):
+def test_429_long_retry_after_fails_fast_and_blocks_bucket(monkeypatch):
+    calls = []
     sleeps = []
 
     def fake_urlopen(req, *a, **kw):
-        if len(sleeps) == 0:
-            raise make_http_error(429, b"{}", {"Retry-After": "9999"})
-        return FakeResponse(b"{}")
+        calls.append(req.full_url)
+        if "/me/player" in req.full_url:
+            raise make_http_error(429, b"{}", {"Retry-After": "44001"})
+        return FakeResponse(b'{"ok": true}')
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
     api = SpotifyAPI(DummyAuth())
-    api._request("GET", "/me")
-    assert sleeps == [30]
+    with pytest.raises(RateLimited) as exc_info:
+        api._request("GET", "/me/player/devices")
+    assert exc_info.value.status == 429
+    assert exc_info.value.retry_after == 44001
+    assert "12h 13m" in exc_info.value.message
+    assert sleeps == []                       # never slept through a 12h wait
+    assert len(calls) == 1
+
+    # the whole player family now fails locally, without touching the network
+    with pytest.raises(RateLimited):
+        api._request("GET", "/me/player")
+    assert len(calls) == 1
+    assert 44000 < api.blocked_for("/me/player/queue") <= 44001
+
+    # other endpoints are a separate bucket and still go through
+    assert api._request("GET", "/me") == {"ok": True}
+    assert api.blocked_for("/search") == 0
+
+
+def test_429_block_expires(monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+    responses = [make_http_error(429, b"{}", {"Retry-After": "60"})]
+
+    def fake_urlopen(req, *a, **kw):
+        if responses:
+            raise responses.pop()
+        return FakeResponse(b"{}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    api = SpotifyAPI(DummyAuth())
+    with pytest.raises(RateLimited):
+        api._request("GET", "/me/player")
+    clock["t"] += 61
+    assert api.blocked_for("/me/player") == 0
+    assert api._request("GET", "/me/player") == {}
+
+
+def test_format_wait():
+    assert format_wait(45) == "45s"
+    assert format_wait(600) == "10m"
+    assert format_wait(44001) == "12h 13m"
 
 
 def test_429_gives_up_after_three_retries(monkeypatch):
@@ -344,7 +386,7 @@ def test_429_gives_up_after_three_retries(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(time, "sleep", lambda s: None)
     api = SpotifyAPI(DummyAuth())
-    with pytest.raises(ApiError):
+    with pytest.raises(RateLimited):
         api._request("GET", "/me")
     assert calls["n"] == 4  # first attempt + 3 retries
 
