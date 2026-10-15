@@ -39,11 +39,49 @@ class ApiError(Exception):
         self.message = message
 
 
+def format_wait(seconds: float) -> str:
+    """Human-readable wait: ``45s``, ``12m``, ``12h 13m``."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    hours, minutes = divmod(seconds // 60, 60)
+    if hours == 0:
+        return f"{minutes}m"
+    return f"{hours}h {minutes:02d}m"
+
+
+class RateLimited(ApiError):
+    """Spotify answered 429 and the wait is too long to sleep through.
+
+    ``retry_after`` is the remaining wait in seconds. Spotify can hand out
+    multi-hour penalties scoped to one endpoint family (seen: ~12h on
+    ``/me/player*`` while ``/me`` and ``/search`` still worked).
+    """
+
+    def __init__(self, retry_after: float) -> None:
+        self.retry_after = retry_after
+        super().__init__(429, f"rate-limited by Spotify — try again in {format_wait(retry_after)}")
+
+
+def _bucket(path: str) -> str:
+    """Rate-limit scope for a path: the player endpoints, or everything else."""
+    return "player" if path.startswith("/me/player") else "other"
+
+
 class SpotifyAPI:
     """Typed wrapper over the subset of the Spotify Web API zpotify needs."""
 
     def __init__(self, auth: Auth) -> None:
         self._auth = auth
+        # bucket -> monotonic time until which requests fail locally: once
+        # Spotify imposes a long penalty, every further request is pointless
+        # and may extend it, so we stop sending them.
+        self._blocked_until: dict[str, float] = {}
+
+    def blocked_for(self, path: str = "/me/player") -> float:
+        """Seconds until requests to ``path`` may hit the network again (0 = now)."""
+        until = self._blocked_until.get(_bucket(path), 0.0)
+        return max(0.0, until - time.monotonic())
 
     # -- core request plumbing -------------------------------------------------
 
@@ -57,6 +95,10 @@ class SpotifyAPI:
         _retried_401: bool = False,
         _retried_5xx: int = 0,
     ) -> dict | None:
+        blocked = self.blocked_for(path)
+        if blocked > 0:
+            raise RateLimited(blocked)
+
         url = f"{API_BASE}{path}"
         if params:
             clean = {k: v for k, v in params.items() if v is not None}
@@ -112,16 +154,22 @@ class SpotifyAPI:
                 method, path, params, body, retries_429, True, retried_5xx
             )
 
-        if status == 429 and retries_429 < _MAX_429_RETRIES:
+        if status == 429:
             retry_after = exc.headers.get("Retry-After", "1") if exc.headers else "1"
             try:
-                wait = min(int(retry_after), _MAX_RETRY_AFTER_SECONDS)
+                wait = max(0, int(retry_after))
             except ValueError:
                 wait = 1
-            time.sleep(wait)
-            return self._request(
-                method, path, params, body, retries_429 + 1, retried_401, retried_5xx
-            )
+            # Short waits are ridden out in place; a long one (or a short one
+            # that keeps recurring) blocks the bucket and fails fast.
+            if wait <= _MAX_RETRY_AFTER_SECONDS and retries_429 < _MAX_429_RETRIES:
+                time.sleep(wait)
+                return self._request(
+                    method, path, params, body, retries_429 + 1, retried_401, retried_5xx
+                )
+            wait = max(wait, 1)
+            self._blocked_until[_bucket(path)] = time.monotonic() + wait
+            raise RateLimited(wait)
 
         # Spotify's dev-mode API throws intermittent 5xx bursts; two retries
         # with a short backoff ride most of them out.
